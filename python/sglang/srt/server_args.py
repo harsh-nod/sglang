@@ -993,6 +993,7 @@ class ServerArgs:
                 "fa3",
                 "flashmla",
                 "cutlass_mla",
+                "wave",
             ],
             default=ServerArgs.attention_backend,
             help="Choose the kernels for attention layers.",
