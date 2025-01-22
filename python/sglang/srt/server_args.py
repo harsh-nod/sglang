@@ -1014,6 +1014,7 @@ class ServerArgs:
                 "flashmla",
                 "cutlass_mla",
                 "intel_amx",
+                "wave",
             ],
             default=ServerArgs.attention_backend,
             help="Choose the kernels for attention layers.",
