@@ -28,6 +28,22 @@ from sglang.test.ci.ci_register import register_amd_ci
 register_amd_ci(est_time=60, suite="stage-a-test-1-amd")
 
 
+from sglang.srt.layers.attention.wave_ops.prefill_attention import (
+    prefill_attention_wave,
+)
+from sglang.srt.layers.attention.triton_ops.prefill_attention import (
+    context_attention_fwd,
+)
+from sglang.srt.layers.attention.wave_ops.decode_attention import (
+    decode_attention_intermediate_arrays_shapes,
+    decode_attention_wave,
+)
+from sglang.srt.layers.attention.wave_ops.extend_attention import extend_attention_wave
+from sglang.srt.layers.attention.wave_ops.prefill_attention import (
+    prefill_attention_wave,
+)
+
+
 class TestWaveAttention(unittest.TestCase):
 
     def _set_all_seeds(self, seed):
