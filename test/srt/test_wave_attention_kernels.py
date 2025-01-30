@@ -11,6 +11,14 @@ from sglang.srt.layers.attention.triton_ops.decode_attention import (
 )
 
 
+from sglang.srt.layers.attention.wave_ops.prefill_attention import (
+    prefill_attention_wave,
+)
+from sglang.srt.layers.attention.triton_ops.prefill_attention import (
+    context_attention_fwd,
+)
+
+
 class TestWaveAttention(unittest.TestCase):
 
     def _set_all_seeds(self, seed):
@@ -120,51 +128,45 @@ class TestWaveAttention(unittest.TestCase):
             for B, H_Q, H_KV, D, D_V in configs:
                 self._test_grouped_decode_attention_once(B, S, H_Q, H_KV, D, D_V)
 
-    # def _test_context_attention_once(self, head_dim, is_causal):
-    #     # Set up a simple test case
-    #     num_heads = 4
-    #     seq_lens = [8, 12]
-    #     max_seq_len = max(seq_lens)
+    def _test_context_attention_once(self, head_dim, is_causal):
+        # Set up a simple test case
+        dtype = torch.float16
+        num_heads = 4
+        seq_lens = [64, 128]
+        max_seq_len = max(seq_lens)
 
-    #     # Create random input tensors
-    #     q = torch.randn(sum(seq_lens), num_heads, head_dim, device="cuda")
-    #     k = torch.randn(sum(seq_lens), num_heads, head_dim, device="cuda")
-    #     v = torch.randn(sum(seq_lens), num_heads, head_dim, device="cuda")
-    #     o = torch.zeros(sum(seq_lens), num_heads, head_dim, device="cuda")
+        # Create random input tensors
+        q = torch.randn(sum(seq_lens), num_heads, head_dim, dtype=dtype, device="cuda")
+        k = torch.randn(sum(seq_lens), num_heads, head_dim, dtype=dtype, device="cuda")
+        v = torch.randn(sum(seq_lens), num_heads, head_dim, dtype=dtype, device="cuda")
+        o_triton = torch.zeros(sum(seq_lens), num_heads, head_dim, dtype=dtype, device="cuda")
+        o = torch.zeros(sum(seq_lens), num_heads, head_dim, dtype=torch.float32, device="cuda")
 
-    #     # Create b_start_loc and b_seq_len tensors
-    #     b_start_loc = torch.tensor([0, seq_lens[0]], device="cuda")
-    #     b_seq_len = torch.tensor(seq_lens, device="cuda")
+        # Create b_start_loc and b_seq_len tensors
+        b_start_loc = torch.tensor([0, seq_lens[0]], device="cuda")
+        b_seq_len = torch.tensor(seq_lens, device="cuda")
 
-    #     context_attention_fwd(
-    #         q, k, v, o, b_start_loc, b_seq_len, max_seq_len, is_causal=is_causal
-    #     )
+        context_attention_fwd(
+            q, k, v, o_triton, b_start_loc, b_seq_len, max_seq_len, is_causal=is_causal
+        )
+        prefill_attention_wave(q, k, v, o, b_start_loc, b_seq_len, max_seq_len, is_causal=is_causal)
+        cos_sim = torch.nn.functional.cosine_similarity(
+            o.flatten(), o_triton.to(torch.float32).flatten(), dim=0
+        )
 
-    #     cu_seq_lens = [0] * (len(seq_lens) + 1)
-    #     for i, seq_len in enumerate(seq_lens):
-    #         cu_seq_lens[i + 1] = cu_seq_lens[i] + seq_len
+        print(cos_sim.item())
+        self.assertTrue(torch.allclose(o, o_triton.to(torch.float32), atol=3e-2))
+        self.assertTrue(cos_sim.item() > 1 - (1e-5))
 
-    #     for i in range(len(seq_lens)):
-    #         start, end = cu_seq_lens[i], cu_seq_lens[i + 1]
-    #         o_torch = torch.nn.functional.scaled_dot_product_attention(
-    #             q[start:end].permute(1, 0, 2),
-    #             k[start:end].permute(1, 0, 2),
-    #             v[start:end].permute(1, 0, 2),
-    #             is_causal=is_causal,
-    #         ).permute(1, 0, 2)
+    def test_context_attention(self):
+        # head_dim = [128, 96, 80, 13]
+        # for is_causal in [False, True]:
 
-    #         cos_sim = torch.nn.functional.cosine_similarity(
-    #             o[start:end].flatten(), o_torch.flatten(), dim=0
-    #         )
-    #         self.assertTrue(cos_sim.item() > 1 - (1e-5))
-    #         self.assertTrue(torch.allclose(o[start:end], o_torch, atol=1e-2))
+        head_dim = [128]
 
-    # def test_context_attention(self):
-    #     head_dim = [128, 96, 80, 13]
-
-    #     for dim in head_dim:
-    #         for is_causal in [True, False]:
-    #             self._test_context_attention_once(dim, is_causal)
+        for dim in head_dim:
+            for is_causal in [False]:
+                self._test_context_attention_once(dim, is_causal)
 
 
 
