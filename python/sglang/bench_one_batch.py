@@ -62,6 +62,7 @@ from typing import Tuple
 import numpy as np
 import torch
 import torch.distributed as dist
+from rpdTracerControl import rpdTracerControl
 
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.distributed.parallel_state import destroy_distributed_environment
@@ -177,6 +178,8 @@ class BenchArgs:
     profile_activities: Tuple[str] = ("CPU", "GPU")
     profile_stage: str = "all"
     profile_filename_prefix: str = "profile"
+    enable_prefill_prof: bool = False
+    enable_decode_prof: bool = False
 
     @staticmethod
     def add_cli_args(parser: argparse.ArgumentParser):
@@ -231,6 +234,14 @@ class BenchArgs:
             default=BenchArgs.profile_filename_prefix,
             help="Prefix of the profiling file names. The full profiling result file(s) be "
             '"[profile_filename_prefix]_batch[batch_size]_input[input_len]_output[output_len].trace.json.gz"',
+        )
+        parser.add_argument(
+            "--enable-decode-prof", action="store_true", help="enable decode profiler."
+        )
+        parser.add_argument(
+            "--enable-prefill-prof",
+            action="store_true",
+            help="enable prefill profiler.",
         )
 
     @classmethod
@@ -494,6 +505,10 @@ def synchronize(device):
 
 
 def latency_test_run_once(
+    is_warm_up,
+    enable_prefill_prof,
+    enable_decode_prof,
+    tp_rank,
     run_name,
     model_runner,
     rank_print,
@@ -540,8 +555,14 @@ def latency_test_run_once(
 
     synchronize(device)
     tic = time.perf_counter()
+    if enable_prefill_prof and not is_warm_up and tp_rank == 0:
+        print("Start profile Prefill")
+        prefill_profile = rpdTracerControl()
+        prefill_profile.start()
     next_token_ids, _, batch = extend(reqs, model_runner)
     synchronize(device)
+    if enable_prefill_prof and not is_warm_up and tp_rank == 0:
+        prefill_profile.stop()
     prefill_latency = time.perf_counter() - tic
 
     if enable_profile_prefill:
@@ -653,6 +674,10 @@ def latency_test(
     # Warm up
     rank_print("Warmup ...")
     latency_test_run_once(
+        True,
+        bench_args.enable_prefill_prof,
+        bench_args.enable_decode_prof,
+        tp_rank,
         bench_args.run_name,
         model_runner,
         rank_print,
@@ -703,6 +728,10 @@ def latency_test(
 
         reqs = prepare_synthetic_inputs_for_latency_test(bs, il, bs_aligned_inputs)
         ret = latency_test_run_once(
+            False,
+            bench_args.enable_prefill_prof,
+            bench_args.enable_decode_prof,
+            tp_rank,
             bench_args.run_name,
             model_runner,
             rank_print,
@@ -734,6 +763,12 @@ def latency_test(
 
 def main(server_args, bench_args):
     server_args.cuda_graph_max_bs = max(bench_args.batch_size)
+    if bench_args.enable_prefill_prof or bench_args.enable_decode_prof:
+        # Optionally call this class method before creating first instance
+        rpdTracerControl.setFilename(name="trace.rpd", append=False)
+
+        # Create first instance (this loads the profiler and creates the file)
+        profile = rpdTracerControl()
 
     _set_envs_and_config(server_args)
 
