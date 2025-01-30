@@ -33,6 +33,9 @@ def get_wave_kernel(
 ):
     mha = (shape.num_query_heads // shape.num_kv_heads) == 1
 
+    k_buffer = view_trunc(k_buffer, (num_seqs, seq_len, num_kv_heads, head_size))
+    v_buffer = view_trunc(v_buffer, (num_seqs, seq_len, num_kv_heads, head_size_kv))
+
     # Get the kernels (either compile or load from cache).
     if mha:
         mfma_variant = (
@@ -90,6 +93,18 @@ def get_wave_kernel(
 def decode_attention_intermediate_arrays_shapes(
     num_seqs, head_size_kv, num_query_heads, max_kv_splits
 ):
+    # Not all fields are used, but we need to pass them to the function
+    shape = paged_decode_attention_shape(
+        num_query_heads=num_query_heads,
+        num_kv_heads=0,
+        head_size=0,
+        head_size_kv=head_size_kv,
+        block_size=0,
+        num_seqs=num_seqs,
+    )
+    return get_paged_decode_intermediate_arrays_shapes(shape, max_kv_splits)
+
+def decode_attention_intermediate_arrays_shapes(num_seqs, head_size_kv, num_query_heads, max_kv_splits):
     # Not all fields are used, but we need to pass them to the function
     shape = paged_decode_attention_shape(
         num_query_heads=num_query_heads,
