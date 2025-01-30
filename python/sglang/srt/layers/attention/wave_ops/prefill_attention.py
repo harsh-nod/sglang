@@ -35,6 +35,9 @@ from iree.turbine.kernel.wave.templates.prefill_attention import (
     get_prefill_attention_kernel,
 )
 
+import os
+dump_generated_mlir = int(os.environ.get("WAVE_DUMP_MLIR", 0))
+
 def prefill_attention_wave(
     q, k, v, o, b_start_loc, b_seq_len, max_seq_len, is_causal=True
 ):
@@ -91,3 +94,8 @@ def prefill_attention_wave(
             b_seq_len.to(torch.int32),
             o,
         )
+        if dump_generated_mlir:
+            shape_list = [q.shape[0], q.shape[1], k.shape[1], q.shape[2], k.shape[2]]
+            filename = f"wave_prefill_attention_{'x'.join(map(str, shape_list))}.mlir"
+            with open(filename, "w") as f:
+                f.write(mb.module_op.get_asm())

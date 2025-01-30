@@ -711,10 +711,10 @@ def decode_attention_wave(
             attn_logits,
             attn_logits_max,
         )
-        # if dump_generated_mlir:
-        #     filename = f"wave_decode_attention_phase0_{'x'.join(map(str, shape))}.mlir"
-        #     with open(filename, "w") as f:
-        #         f.write(mb_qk.module_op.get_asm())
+        if dump_generated_mlir:
+            filename = f"wave_decode_attention_phase0_{'x'.join(map(str, shape))}.mlir"
+            with open(filename, "w") as f:
+                f.write(mb_qk.module_op.get_asm())
 
 
     with tk.gen.TestLaunchContext(
@@ -727,10 +727,10 @@ def decode_attention_wave(
         use_scheduling_barriers=False,
     ):
         mb_sv = phase_1(attn_logits, attn_logits_max, o)
-        # if dump_generated_mlir:
-        #     filename = f"wave_decode_attention_phase1_{'x'.join(map(str, shape))}.mlir"
-        #     with open(filename, "w") as f:
-        #         f.write(mb_sv.module_op.get_asm())
+        if dump_generated_mlir:
+            filename = f"wave_decode_attention_phase1_{'x'.join(map(str, shape))}.mlir"
+            with open(filename, "w") as f:
+                f.write(mb_sv.module_op.get_asm())
 
 
 
