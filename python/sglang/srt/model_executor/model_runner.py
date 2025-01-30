@@ -1549,6 +1549,10 @@ class ModelRunner:
                 from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
 
                 return TritonAttnBackend(self)
+        elif backend_str == "wave":
+            from sglang.srt.layers.attention.wave_backend import WaveAttnBackend
+
+            return WaveAttnBackend(self)
         elif backend_str == "torch_native":
             from sglang.srt.layers.attention.torch_native_backend import (
                 TorchNativeAttnBackend,
