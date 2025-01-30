@@ -870,11 +870,11 @@ class Grok1ForCausalLM(nn.Module):
         debug_tensor_dump_inject = get_global_server_args().debug_tensor_dump_inject
         warnings.filterwarnings("ignore", category=FutureWarning)
 
-        if get_tensor_model_parallel_rank() == 0:
-            logger.info(
-                f"#parameters (analytical): {self.get_num_params_analytical() / 1e9:.2f} B, "
-                f"#parameters (actual): {self.get_num_params_torch() / 1e9:.2f} B"
-            )
+        # if get_tensor_model_parallel_rank() == 0:
+        #     logger.info(
+        #         f"#parameters (analytical): {self.get_num_params_analytical() / 1e9:.2f} B, "
+        #         f"#parameters (actual): {self.get_num_params_torch() / 1e9:.2f} B"
+        #     )
         self.loaded_param_names = set()
 
     def forward(
