@@ -959,6 +959,9 @@ class ModelRunner:
                 from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
 
                 self.attn_backend = TritonAttnBackend(self)
+        elif self.server_args.attention_backend == "wave":
+            from sglang.srt.layers.attention.wave_backend import WaveAttnBackend
+            self.attn_backend = WaveAttnBackend(self)
         elif self.server_args.attention_backend == "torch_native":
             from sglang.srt.layers.attention.torch_native_backend import (
                 TorchNativeAttnBackend,
