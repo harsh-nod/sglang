@@ -36,8 +36,17 @@ from iree.turbine.kernel.wave.templates.extend_attention import (
 )
 
 import os
+import logging
 
 dump_generated_mlir = int(os.environ.get("WAVE_DUMP_MLIR", 0))
+
+import inspect, re
+
+def varname(p):
+  for line in inspect.getframeinfo(inspect.currentframe().f_back)[3]:
+    m = re.search(r'\bvarname\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)', line)
+    if m:
+      return m.group(1)
 
 
 def extend_attention_wave(
@@ -53,19 +62,41 @@ def extend_attention_wave(
     b_start_loc_extend,
     max_seq_len,
     output,
+    layer_scaling=None,
     is_causal=True, # TODO: check this
     logit_cap = 0.  # TODO: check this
     # is_causal=False,
 ):
-    arguments = [
-            ("q_extend", q_extend),
-            ("k_extend", k_extend),
-            ("v_extend", v_extend),
-            ("output", output),
-            ("req_to_tokens", req_to_tokens),
-            ("k_buffer", k_buffer),
-            ("v_buffer", v_buffer),
-        ]
+    # arguments = [
+    #         ("q_extend", q_extend),
+    #         ("k_extend", k_extend),
+    #         ("v_extend", v_extend),
+    #         ("output", output),
+    #         ("req_to_tokens", req_to_tokens),
+    #         ("k_buffer", k_buffer),
+    #         ("v_buffer", v_buffer),
+    #     ]
+
+    # local_arg = locals()
+    # for arg in local_arg:
+    #     if hasattr(arg, "shape"):
+    #         logging.info(f"Argument {varname(arg)}: shape = {arg.shape}")
+    #     else:
+    #         logging.info(f"Argument {varname(arg)}: value = {arg}")
+    # logging.info(f"K cache: {k_buffer.shape}")
+    # logging.info(f"V cache: {v_buffer.shape}")
+    # logging.info(f"req to token: {req_to_tokens.shape}")
+    # logging.info(f"k_stride = {k_buffer.stride()}")
+    # logging.info(f"v_stride = {v_buffer.stride()}")
+    # logging.info(f"q_extend_shape = {q_extend.shape}")
+    # logging.info(f"k_extend_shape = {k_extend.shape}")
+    # logging.info(f"v_extend_shape = {v_extend.shape}")
+    # logging.info(f"req_to_tokens.stride = {req_to_tokens.stride()}")
+    # logging.info(f"output.stride = {output.stride()}")
+    # logging.info(f"b_seq_len = {b_seq_len}")
+    # logging.info(f"b_seq_len_extend = {b_seq_len_extend}")
+    # logging.info(f"b_req_idx = {b_req_idx}")
+    # logging.info(f"req_to_tokens[0, 0:32] = {req_to_tokens[0, 0:32]}")
 
     shape = AttentionShape(
         num_query_heads=q_extend.shape[1],
@@ -95,18 +126,20 @@ def extend_attention_wave(
         k_buffer.shape,
         v_buffer.shape,
         output.shape,
-        input_dtype=q_extend.dtype,
-        output_dtype=output.dtype,
-        size_dtype=b_seq_len.dtype,
-        is_causal=is_causal,
-        logit_cap=logit_cap,
+        q_extend.dtype,
+        output.dtype,
+        b_seq_len.dtype,
+        is_causal,
+        logit_cap,
     )
 
     hyperparams.update(get_default_scheduling_params())
     config = get_default_run_config()
 
-    log2e = 1.44269504089
-    dk_sqrt = math.sqrt(1.0 / shape.head_size)
+    # log2e = 1.44269504089
+    # dk_sqrt = layer_scaling or math.sqrt(1.0 / shape.head_size)
+    # scaling = math.log(math.e, 2) * dk_sqrt
+    # dk_sqrt = math.sqrt(1.0 / shape.head_size)
     with tk.gen.TestLaunchContext(
         hyperparams,
         canonicalize=True,
@@ -119,7 +152,7 @@ def extend_attention_wave(
     ):
         # TODO: Add scaling of QK as part of kernel.
         mb = extend_attention(
-            q_extend * dk_sqrt * log2e,
+            q_extend,
             k_extend,
             v_extend,
             k_buffer,
@@ -143,3 +176,4 @@ def extend_attention_wave(
             filename = f"wave_prefill_attention_{'x'.join(map(str, shape_list))}.mlir"
             with open(filename, "w") as f:
                 f.write(mb.module_op.get_asm())
+

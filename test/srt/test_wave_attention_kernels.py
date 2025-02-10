@@ -120,7 +120,7 @@ class TestWaveAttention(unittest.TestCase):
         self._set_all_seeds(42)
 
     def _test_extend_attention_once(self, B, N_CTX, H_Q, H_KV, D):
-        dtype = torch.float16
+        dtype = torch.bfloat16
         extend_seq_len = 128
 
         b_seq_len_prefix = torch.full(
@@ -181,35 +181,71 @@ class TestWaveAttention(unittest.TestCase):
         b_start_loc_extend = torch.zeros_like(b_seq_len)
         b_start_loc_extend[1:] = torch.cumsum(b_seq_len_extend[:-1], 0)
         max_len_extend = torch.max(b_seq_len_extend, 0)[0].item()
-        extend_attention_fwd(
-            q_extend,
-            k_extend,
-            v_extend,
-            o_triton,
-            k_buffer,
-            v_buffer,
-            req_to_tokens,
-            b_req_idx,
-            b_seq_len,
-            b_seq_len_extend,
-            b_start_loc_extend,
-            max_len_extend,
-        )
 
-        redundant_attention(
-            q_extend,
-            o_redundant,
-            k_buffer,
-            v_buffer,
-            b_req_idx,
-            b_start_loc,
-            b_seq_len,
-            b_seq_len_prefix,
-            max_len_in_batch,
-        )
+        # Load data from artifacts directory directory 1.
+        dir = '/home/amd/jacky/jacky/sglang/python/artifacts/'
+        q_extend = torch.load(dir + 'qextend.pt').to("cuda")
+        k_extend = torch.load(dir + 'kextend.pt').to("cuda")
+        v_extend = torch.load(dir + 'vextend.pt').to("cuda")
+        o_ref_triton = torch.load(dir + 'otriton.pt').to("cuda")
+        k_buffer = torch.load(dir + 'kbuffer.pt').to("cuda")
+        v_buffer = torch.load(dir + 'vbuffer.pt').to("cuda")
+        req_to_tokens = torch.load(dir + 'req_to_token.pt').to("cuda")
+        b_req_idx = torch.load(dir + 'req_pool_indices.pt').to("cuda")
+        b_seq_len = torch.load(dir + 'seq_lens.pt').to("cuda")
+        b_seq_len_extend = torch.load(dir + 'extend_seq_lens.pt').to("cuda")
+        b_start_loc_extend = torch.load(dir + 'extend_start_loc.pt').to("cuda")
+        max_len_extend = torch.load(dir + 'max_extend_len.pt')
+        sm_scale = torch.load(dir + 'sm_scale.pt')
+
+        # Directory 2
+        # dir = '/home/amd/jacky/jacky/sglang/python/client_artifacts/'
+        # q_extend = torch.load(dir + 'qextend_client.pt').to("cuda")
+        # k_extend = torch.load(dir + 'kextend_client.pt').to("cuda")
+        # v_extend = torch.load(dir + 'vextend_client.pt').to("cuda")
+        # o_ref_triton = torch.load(dir + 'otriton_client.pt').to("cuda")
+        # k_buffer = torch.load(dir + 'kbuffer_client.pt').to("cuda")
+        # v_buffer = torch.load(dir + 'vbuffer_client.pt').to("cuda")
+        # req_to_tokens = torch.load(dir + 'req_to_token_client.pt').to("cuda")
+        # b_req_idx = torch.load(dir + 'req_pool_indices_client.pt').to("cuda")
+        # b_seq_len = torch.load(dir + 'seq_lens_client.pt').to("cuda")
+        # b_seq_len_extend = torch.load(dir + 'extend_seq_lens_client.pt').to("cuda")
+        # b_start_loc_extend = torch.load(dir + 'extend_start_loc_client.pt').to("cuda")
+        # max_len_extend = torch.load(dir + 'max_extend_len_client.pt')
+        # sm_scale = torch.load(dir + 'sm_scale_client.pt')
+
+        #extend_attention_fwd(
+        #    q_extend,
+        #    k_extend,
+        #    v_extend,
+        #    o_triton,
+        #    k_buffer,
+        #    v_buffer,
+        #    req_to_tokens,
+        #    b_req_idx,
+        #    b_seq_len,
+        #    b_seq_len_extend,
+        #    b_start_loc_extend,
+        #    max_len_extend,
+        #)
+
+        #redundant_attention(
+        #    q_extend,
+        #    o_redundant,
+        #    k_buffer,
+        #    v_buffer,
+        #    b_req_idx,
+        #    b_start_loc,
+        #    b_seq_len,
+        #    b_seq_len_prefix,
+        #    max_len_in_batch,
+        #)
 
         o_wave = torch.empty((extend_token_num, H_Q, D), dtype=dtype, device="cuda")
+        o_wave = torch.zeros_like(o_ref_triton)
 
+        # k_buffer = torch.zeros_like(k_buffer) - 100
+        # v_buffer = torch.zeros_like(v_buffer) - 100
         extend_attention_wave(
             q_extend,
             k_extend,
@@ -223,27 +259,39 @@ class TestWaveAttention(unittest.TestCase):
             b_start_loc_extend,
             max_len_extend,
             o_wave,
-            is_causal=False,
+            layer_scaling=sm_scale,
+            is_causal=True,
         )
 
-        # Since we are not doing causal attention, we need a separate
-        # reference kernel.
-        o_wave_ref = ref_extend_attn(
-            q_extend,
-            k_buffer,
-            v_buffer,
-            b_req_idx,
-            b_start_loc,
-            b_seq_len,
-            b_seq_len_prefix,
-            max_len_in_batch,
-            extend_token_num,
-            dtype,
-            is_causal=False,
-        )
+        ## Since we are not doing causal attention, we need a separate
+        ## reference kernel.
+        #o_wave_ref = ref_extend_attn(
+        #    q_extend,
+        #    k_buffer,
+        #    v_buffer,
+        #    b_req_idx,
+        #    b_start_loc,
+        #    b_seq_len,
+        #    b_seq_len_prefix,
+        #    max_len_in_batch,
+        #    extend_token_num,
+        #    dtype,
+        #    is_causal=False,
+        #)
 
-        self.assertTrue(torch.allclose(o_triton, o_redundant, rtol=1e-2))
-        self.assertTrue(torch.allclose(o_wave, o_wave_ref, rtol=1e-2))
+        print(torch.max(torch.abs(o_ref_triton - o_wave)))
+
+        print(torch.max(torch.abs(o_ref_triton[0] - o_wave[0])))
+        print(torch.max(torch.abs(o_ref_triton[1] - o_wave[1])))
+        print(torch.max(torch.abs(o_ref_triton[2] - o_wave[2])))
+        print(torch.max(torch.abs(o_ref_triton[3] - o_wave[3])))
+        print(torch.max(torch.abs(o_ref_triton[4] - o_wave[4])))
+        print(torch.max(torch.abs(o_ref_triton[5] - o_wave[5])))
+        breakpoint()
+        torch.testing.assert_allclose(o_wave, o_ref_triton, rtol=1e-3, atol=1e-3)
+
+        #self.assertTrue(torch.allclose(o_triton, o_redundant, rtol=1e-2))
+        #self.assertTrue(torch.allclose(o_wave, o_wave_ref, rtol=1e-2))
 
     def test_extend_attention(self):
 
