@@ -34,6 +34,7 @@ from iree.turbine.kernel.wave.templates.attention_common import AttentionShape
 from iree.turbine.kernel.wave.templates.extend_attention import (
     get_extend_attention_kernel,
 )
+from sglang.srt.layers.dp_attention import get_attention_tp_rank
 
 import os
 
@@ -71,7 +72,7 @@ def extend_attention_wave(
     assert shape.num_query_heads % shape.num_kv_heads == 0
 
     # Run the wave kernel.
-    mfma_variant = (MMAType.F32_16x16x16_F16, MMAType.F32_16x16x16_F16)
+    mfma_variant = (MMAType.F32_16x16x32_K8_F16, MMAType.F32_16x16x16_F16)
     (
         extend_attention,
         hyperparams,
@@ -97,6 +98,21 @@ def extend_attention_wave(
 
     hyperparams.update(get_default_scheduling_params())
     config = get_default_run_config()
+    # import logging
+    # import threading
+    # save_lock = threading.Lock()
+    # with save_lock:
+    #     logging.info(f"q_extend.shape: {q_extend.shape}")
+    #     logging.info(f"k_extend.shape: {k_extend.shape}")
+    #     logging.info(f"v_extend.shape: {v_extend.shape}")
+    #     logging.info(f"k_buffer.shape: {k_buffer.shape}")
+    #     logging.info(f"v_buffer.shape: {v_buffer.shape}")
+    #     logging.info(f"req_to_token.shape: {req_to_tokens.shape}")
+    #     logging.info(f"b_req_idx: {b_req_idx}")
+    #     logging.info(f"b_seq_len: {b_seq_len}")
+    #     logging.info(f"b_seq_len_extend: {b_seq_len_extend}")
+    #     logging.info(f"b_start_loc_extend: {b_start_loc_extend}")
+    #     logging.info("\n\n")
 
     with tk.gen.TestLaunchContext(
         hyperparams,

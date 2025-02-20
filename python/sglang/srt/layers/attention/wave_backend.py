@@ -122,6 +122,29 @@ class WaveAttnBackend(AttentionBackend):
         forward_batch: ForwardBatch,
         save_kv_cache=True,
     ):
+        # import logging
+        # from sglang.srt.layers.dp_attention import get_attention_tp_rank
+        # tp_rank = get_attention_tp_rank()
+        # if tp_rank == 0:
+        #     free_start, total = torch.cuda.mem_get_info(q.device)
+        #     logging.info(f"Before Wave launch usage: {total - free_start}")
+            
+        # # Print the shapes of the input tensors
+        # logging.info(f"Shape of q: {q.shape}")
+        # logging.info(f"Shape of k: {k.shape}")
+        # logging.info(f"Shape of v: {v.shape}")
+
+        # logging.info(f"Shape of forward_batch.out_cache_loc: {forward_batch.out_cache_loc.shape}")
+        # logging.info(f"Shape of forward_batch.extend_seq_lens: {forward_batch.extend_seq_lens.shape}")
+        # logging.info(f"Shape of forward_batch.seq_lens: {forward_batch.seq_lens.shape}")
+        # logging.info(f"Shape of forward_batch.extend_start_loc: {forward_batch.extend_start_loc.shape}")
+        # logging.info(f"Shape of forward_batch.req_to_token_pool.req_to_token: {forward_batch.req_to_token_pool.req_to_token.shape}")
+        # logging.info(f"Shape of forward_batch.req_pool_indices: {forward_batch.req_pool_indices.shape}")
+        # logging.info(f"layer.scaling: {layer.scaling}")
+        # logging.info(f"layer.logit_cap: {layer.logit_cap}")
+
+
+
         # TODO: reuse the buffer across layers
         if layer.qk_head_dim != layer.v_head_dim:
             o = q.new_empty((q.shape[0], layer.tp_q_head_num * layer.v_head_dim))
@@ -160,6 +183,14 @@ class WaveAttnBackend(AttentionBackend):
             layer_scaling=layer.scaling,
             logit_cap=layer.logit_cap,
         )
+
+        # if tp_rank == 0:
+        #     free_end, _ = torch.cuda.mem_get_info(q.device)
+        #     logging.info(f"After Wave launch usage: {total - free_end}")
+        #     logging.info(f"Wave launch usage: {free_start - free_end}")
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
         return o
 
     def forward_decode(

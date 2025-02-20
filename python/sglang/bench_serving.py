@@ -1180,15 +1180,15 @@ def run_benchmark(args_: argparse.Namespace):
     # Set url
     if args.port is None:
         args.port = {
-            "sglang": 30000,
-            "sglang-native": 30000,
-            "sglang-oai": 30000,
+            "sglang": 30001,
+            "sglang-native": 30001,
+            "sglang-oai": 30001,
             "lmdeploy": 23333,
             "vllm": 8000,
             "trt": 8000,
             "gserver": 9988,
             "truss": 8080,
-        }.get(args.backend, 30000)
+        }.get(args.backend, 30001)
 
     model_url = (
         f"{args.base_url}/v1/models"

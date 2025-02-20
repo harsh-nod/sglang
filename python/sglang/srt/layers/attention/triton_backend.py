@@ -121,6 +121,14 @@ class TritonAttnBackend(AttentionBackend):
         forward_batch: ForwardBatch,
         save_kv_cache=True,
     ):
+        # import logging
+        # from sglang.srt.layers.dp_attention import get_attention_tp_rank
+
+        # tp_rank = get_attention_tp_rank()
+        # if tp_rank == 0:
+        #     free_start, total = torch.cuda.mem_get_info(q.device)
+        #     logging.info(f"Before triton launch usage: {total - free_start}")
+
         # TODO: reuse the buffer across layers
         if layer.qk_head_dim != layer.v_head_dim:
             o = q.new_empty((q.shape[0], layer.tp_q_head_num * layer.v_head_dim))
@@ -149,6 +157,10 @@ class TritonAttnBackend(AttentionBackend):
             layer.scaling,
             layer.logit_cap,
         )
+        # if tp_rank == 0:
+        #     free_end, _ = torch.cuda.mem_get_info(q.device)
+        #     logging.info(f"After triton launch usage: {total - free_end}")
+        #     logging.info(f"triton launch usage: {free_start - free_end}")
         return o
 
     def forward_decode(

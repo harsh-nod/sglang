@@ -226,4 +226,9 @@ compile_commands.json
 # VSCode
 .vscode
 
+# Wave
+sglang_server_log_*.json
+sglang_client_log*.json
+*.rpd
+gpucore*
 1

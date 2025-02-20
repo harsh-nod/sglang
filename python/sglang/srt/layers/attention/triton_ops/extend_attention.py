@@ -30,7 +30,7 @@ if is_cuda_available:
     CUDA_CAPABILITY = torch.cuda.get_device_capability()
 
 is_hip_ = is_hip()
-
+from sglang.srt.layers.dp_attention import get_attention_tp_rank
 
 @triton.jit
 def tanh(x):
@@ -272,6 +272,8 @@ def extend_attention_fwd(
 
     k_buffer, v_buffer: (prefix + extend) tensors in mem_manager
     """
+    # free_start, total = torch.cuda.mem_get_info('cuda')
+    # print(f"Before Triton usage: {total - free_start}")
     Lq, Lk, Lv = (
         q_extend.shape[-1],
         k_extend.shape[-1],
@@ -293,7 +295,10 @@ def extend_attention_fwd(
     BLOCK_DV = triton.next_power_of_2(Lv)
 
     if is_hip_:
-        BLOCK_M, BLOCK_N = (64, 64)
+        BLOCK_M, BLOCK_N = (64, 64 // 2)
+        # BLOCK_DMODEL = 64
+        # BLOCK_DV = 64
+        # BLOCK_M, BLOCK_N = (64, 64)
         num_warps = 4
 
     else:
@@ -321,10 +326,7 @@ def extend_attention_fwd(
     grid = (batch_size, head_num, triton.cdiv(max_len_extend, BLOCK_M))
     num_stages = 1
 
-    extra_kargs = {}
-    if is_hip_:
-        extra_kargs = {"waves_per_eu": 4, "matrix_instr_nonkdim": 16, "kpack": 2}
-
+    extra_kargs = {"waves_per_eu": 4, "matrix_instr_nonkdim": 16, "kpack": 2}
     _fwd_kernel[grid](
         q_extend,
         k_extend,

@@ -99,6 +99,7 @@ from sglang.srt.utils import (
     suppress_other_loggers,
 )
 from sglang.utils import TypeBasedDispatcher, get_exception_traceback
+from rpdTracerControl import rpdTracerControl
 
 logger = logging.getLogger(__name__)
 
@@ -392,13 +393,15 @@ class Scheduler:
                 "Profiling enabled. Traces will be saved to: %s",
                 self.torch_profiler_trace_dir,
             )
-            self.profiler = torch.profiler.profile(
-                activities=[
-                    torch.profiler.ProfilerActivity.CPU,
-                    torch.profiler.ProfilerActivity.CUDA,
-                ],
-                with_stack=True,
-            )
+            # self.profiler = torch.profiler.profile(
+            #     activities=[
+            #         torch.profiler.ProfilerActivity.CPU,
+            #         torch.profiler.ProfilerActivity.CUDA,
+            #     ],
+            #     with_stack=True,
+            # )
+            self.rpd = rpdTracerControl()
+            self.rpd_flag = True
 
         # Init metrics stats
         self.stats = SchedulerStats()
@@ -1703,17 +1706,26 @@ class Scheduler:
             self.stop_profile()
 
     def start_profile(self) -> None:
-        if self.profiler is None:
-            raise RuntimeError("Profiler is not enabled.")
-        self.profiler.start()
+        # if self.profiler is None:
+        #     raise RuntimeError("Profiler is not enabled.")
+        # self.profiler.start()
+        logger.info("SOGA: rpd is enable")
+        if self.tp_rank == 0 and self.rpd_flag:
+            self.rpd.start()
+            logger.info("rpd is enable")
+
 
     def stop_profile(self) -> None:
-        if self.profiler is None:
-            raise RuntimeError("Profiler is not enabled.")
-        self.profiler.stop()
-        self.profiler.export_chrome_trace(
-            self.torch_profiler_trace_dir + "/" + str(time.time()) + ".trace.json.gz"
-        )
+        # if self.profiler is None:
+        #     raise RuntimeError("Profiler is not enabled.")
+        # self.profiler.stop()
+        # self.profiler.export_chrome_trace(
+        #     self.torch_profiler_trace_dir + "/" + str(time.time()) + ".trace.json.gz"
+        # )
+        if self.tp_rank == 0 and self.rpd_flag:
+            self.rpd.stop()
+            self.rpd.flush()
+            logger.info("rpd is done")
         logger.info("Profiler is done")
 
     def open_session(self, recv_req: OpenSessionReqInput):

@@ -65,6 +65,7 @@ from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.server_args import PortArgs, ServerArgs
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+from rpdTracerControl import rpdTracerControl
 from sglang.srt.utils import (
     configure_logger,
     get_bool_env_var,
@@ -306,6 +307,7 @@ def synchronize(device):
 
 
 def latency_test_run_once(
+    is_warm_up, tp_rank,
     run_name,
     model_runner,
     rank_print,
@@ -349,10 +351,15 @@ def latency_test_run_once(
         profiler.start()
 
     # Prefill
+    if not is_warm_up and tp_rank == 0:
+        profile = rpdTracerControl()
+        profile.start()
     synchronize(device)
     tic = time.time()
     next_token_ids, _, batch = extend(reqs, model_runner)
     synchronize(device)
+    if not is_warm_up and tp_rank == 0:
+        profile.stop()
     prefill_latency = time.time() - tic
     tot_latency += prefill_latency
     throughput = input_len * batch_size / prefill_latency
@@ -430,6 +437,7 @@ def latency_test(
     # Warm up
     rank_print("Warmup ...")
     latency_test_run_once(
+        True, tp_rank,
         bench_args.run_name,
         model_runner,
         rank_print,
@@ -451,6 +459,7 @@ def latency_test(
     ):
         reqs = prepare_synthetic_inputs_for_latency_test(bs, il)
         ret = latency_test_run_once(
+            False, tp_rank,
             bench_args.run_name,
             model_runner,
             rank_print,
@@ -474,6 +483,8 @@ def latency_test(
 
 def main(server_args, bench_args):
     _set_envs_and_config(server_args)
+    rpdTracerControl.setFilename(name = "trace.rpd", append=False)
+    profile = rpdTracerControl()
 
     if server_args.model_path:
         if bench_args.correctness_test:

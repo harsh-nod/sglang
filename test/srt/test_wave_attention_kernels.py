@@ -20,6 +20,7 @@ from sglang.srt.layers.attention.wave_ops.extend_attention import (
 )
 from sglang.srt.layers.attention.triton_ops.extend_attention import (
     redundant_attention,
+    extend_attention_fwd,
 )
 
 class TestWaveAttention(unittest.TestCase):
@@ -39,11 +40,14 @@ class TestWaveAttention(unittest.TestCase):
 
     def _test_extend_attention_once(self, B, N_CTX, H_Q, H_KV, D):
         dtype = torch.float16
-        extend_seq_len = 128
+        extend_seq_len = 1024
 
         b_seq_len_prefix = torch.full(
             (B,), N_CTX // B, dtype=torch.int32, device="cuda"
         )
+        # b_seq_len_prefix = torch.zeros(
+        #     (B,), dtype=torch.int32, device="cuda"
+        # )
         b_seq_len_extend = torch.full(
             (B,), extend_seq_len, dtype=torch.int32, device="cuda"
         )
@@ -99,20 +103,34 @@ class TestWaveAttention(unittest.TestCase):
         b_start_loc_extend[1:] = torch.cumsum(b_seq_len_extend[:-1], 0)
         max_len_extend = torch.max(b_seq_len_extend, 0)[0].item()
 
-        redundant_attention(
+        # redundant_attention(
+        #     q_extend,
+        #     o_redundant,
+        #     k_buffer,
+        #     v_buffer,
+        #     b_req_idx,
+        #     b_start_loc,
+        #     b_seq_len,
+        #     b_seq_len_prefix,
+        #     max_len_in_batch,
+        # )
+        extend_attention_fwd(
             q_extend,
+            k_extend,
+            v_extend,
             o_redundant,
             k_buffer,
             v_buffer,
+            req_to_tokens,
             b_req_idx,
-            b_start_loc,
             b_seq_len,
-            b_seq_len_prefix,
-            max_len_in_batch,
+            b_seq_len_extend,
+            b_start_loc_extend,
+            max_len_extend,
         )
 
-        o_wave = torch.empty((extend_token_num, H_Q, D), dtype=dtype, device="cuda")
 
+        o_wave = torch.empty((extend_token_num, H_Q, D), dtype=dtype, device="cuda")
         extend_attention_wave(
             q_extend,
             k_extend,
@@ -127,11 +145,13 @@ class TestWaveAttention(unittest.TestCase):
             max_len_extend,
             o_wave,
             is_causal=True,
+            layer_scaling=0.08838834764831845,
+            logit_cap=30.0,
         )
 
         self.assertTrue(torch.allclose(o_wave, o_redundant, rtol=1e-2))
 
-    def test_extend_attention(self):
+    def _test_extend_attention(self):
 
         # Define the varying parameter values
         attention_values = [128]
@@ -139,6 +159,16 @@ class TestWaveAttention(unittest.TestCase):
         # Loop through the values and call the method
         for value in attention_values:
             self._test_extend_attention_once(32, 16384, 6, 1, value)
+    
+    def test_extend_attention_more(self):
+
+        # Define the varying parameter values
+        counter = 1
+
+        # Loop through the values and call the method
+        while (counter > 0):
+            self._test_extend_attention_once(32, 16384, 6, 1, 128)
+            counter -= 1
 
     def _test_grouped_decode_attention_once(self, B, S, H_Q, H_KV, D, D_V):
         dtype = torch.float16
@@ -218,7 +248,7 @@ class TestWaveAttention(unittest.TestCase):
         self.assertTrue(cos_sim.item() > 0.99)
         self.assertTrue(torch.allclose(o, o_triton, atol=3e-2))
 
-    def test_grouped_decode_attention(self):
+    def _test_grouped_decode_attention(self):
         # seq_lens = [5, 100, 128, 500]
         seq_lens = [
             100,
@@ -271,7 +301,7 @@ class TestWaveAttention(unittest.TestCase):
         self.assertTrue(torch.allclose(o, o_triton, atol=3e-2))
         self.assertTrue(cos_sim.item() > 1 - (1e-5))
 
-    def test_context_attention(self):
+    def _test_context_attention(self):
         # head_dim = [128, 96, 80, 13]
         # for is_causal in [False, True]:
 

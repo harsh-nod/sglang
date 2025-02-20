@@ -1,0 +1,1645 @@
+diff --git a/python/sglang/srt/layers/attention/wave_backend.py b/python/sglang/srt/layers/attention/wave_backend.py
+deleted file mode 100644
+index e05ba30f..00000000
+--- a/python/sglang/srt/layers/attention/wave_backend.py
++++ /dev/null
+@@ -1,204 +0,0 @@
+-from __future__ import annotations
+-
+-from typing import TYPE_CHECKING, Optional
+-
+-import torch
+-
+-from sglang.srt.layers.attention import AttentionBackend
+-from sglang.srt.layers.dp_attention import get_attention_tp_size
+-from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
+-
+-if TYPE_CHECKING:
+-    from sglang.srt.layers.radix_attention import RadixAttention
+-    from sglang.srt.model_executor.model_runner import ModelRunner
+-    from sglang.srt.speculative.spec_info import SpecInfo
+-
+-
+-class WaveAttnBackend(AttentionBackend):
+-    def __init__(self, model_runner: ModelRunner):
+-        # Lazy import to avoid the initialization of cuda context
+-        # TODO: Switch to wave decode.
+-        from sglang.srt.layers.attention.triton_ops.decode_attention import (
+-            decode_attention_fwd,
+-        )
+-        from sglang.srt.layers.attention.wave_ops.extend_attention import (
+-            extend_attention_wave,
+-        )
+-
+-        super().__init__()
+-
+-        self.decode_attention_fwd = decode_attention_fwd
+-        self.extend_attention_fwd = extend_attention_wave
+-
+-        self.num_head = (
+-            model_runner.model_config.num_attention_heads // get_attention_tp_size()
+-        )
+-
+-        self.num_kv_splits = model_runner.server_args.triton_attention_num_kv_splits
+-        self.v_head_dim = model_runner.token_to_kv_pool.get_value_buffer(0).shape[-1]
+-
+-        self.forward_metadata = None
+-
+-        self.cuda_graph_max_seq_len = model_runner.model_config.context_len
+-
+-        self.device = model_runner.device
+-
+-    def init_forward_metadata(self, forward_batch: ForwardBatch):
+-        """Init auxiliary variables for wave attention backend."""
+-
+-        if forward_batch.forward_mode.is_decode():
+-            attn_logits = torch.empty(
+-                (
+-                    forward_batch.batch_size,
+-                    self.num_head,
+-                    self.num_kv_splits,
+-                    self.v_head_dim + 1,
+-                ),
+-                dtype=torch.float32,
+-                device=self.device,
+-            )
+-
+-            max_extend_len = None
+-        else:
+-            attn_logits = None
+-            max_extend_len = torch.max(forward_batch.extend_seq_lens).item()
+-
+-        self.forward_metadata = attn_logits, max_extend_len
+-
+-    def init_cuda_graph_state(self, max_bs: int):
+-        self.cuda_graph_max_total_num_tokens = max_bs * self.cuda_graph_max_seq_len
+-
+-        self.cuda_graph_start_loc = torch.zeros(
+-            (max_bs,), dtype=torch.int32, device=self.device
+-        )
+-        self.cuda_graph_attn_logits = torch.empty(
+-            (max_bs, self.num_head, self.num_kv_splits, self.v_head_dim + 1),
+-            dtype=torch.float32,
+-            device="cuda",
+-        )
+-
+-    def init_forward_metadata_capture_cuda_graph(
+-        self,
+-        bs: int,
+-        num_tokens: int,
+-        req_pool_indices: torch.Tensor,
+-        seq_lens: torch.Tensor,
+-        encoder_lens: Optional[torch.Tensor],
+-        forward_mode: ForwardMode,
+-        spec_info: Optional[SpecInfo],
+-    ):
+-        assert encoder_lens is None, "Not supported"
+-        assert forward_mode.is_decode(), "Not supported"
+-        assert spec_info is None, "Not supported"
+-
+-        self.forward_metadata = (
+-            self.cuda_graph_attn_logits,
+-            None,
+-        )
+-
+-    def init_forward_metadata_replay_cuda_graph(
+-        self,
+-        bs: int,
+-        req_pool_indices: torch.Tensor,
+-        seq_lens: torch.Tensor,
+-        seq_lens_sum: int,
+-        encoder_lens: Optional[torch.Tensor],
+-        forward_mode: ForwardMode,
+-        spec_info: Optional[SpecInfo],
+-    ):
+-        # NOTE: encoder_lens expected to be zeros or None
+-        self.cuda_graph_start_loc.zero_()
+-        self.cuda_graph_start_loc[1:bs] = torch.cumsum(seq_lens[: bs - 1], dim=0)
+-
+-    def get_cuda_graph_seq_len_fill_value(self):
+-        return 1
+-
+-    def forward_extend(
+-        self,
+-        q: torch.Tensor,
+-        k: torch.Tensor,
+-        v: torch.Tensor,
+-        layer: RadixAttention,
+-        forward_batch: ForwardBatch,
+-        save_kv_cache=True,
+-    ):
+-        # TODO: reuse the buffer across layers
+-        if layer.qk_head_dim != layer.v_head_dim:
+-            o = q.new_empty((q.shape[0], layer.tp_q_head_num * layer.v_head_dim))
+-        else:
+-            o = torch.empty_like(q)
+-
+-        if save_kv_cache:
+-            forward_batch.token_to_kv_pool.set_kv_buffer(
+-                layer, forward_batch.out_cache_loc, k, v
+-            )
+-
+-        _, max_extend_len = self.forward_metadata
+-        # TODO: We ran into situtations where q_extend.shape[0] was
+-        # not equal to the value in extend_seq_lens which was max_extend_len.
+-        # This should not be required and is probably a bug in sglang.
+-        computed_max_ext_seq_len = torch.max(forward_batch.extend_seq_lens)
+-        if computed_max_ext_seq_len != max_extend_len:
+-            assert len(forward_batch.extend_seq_lens) == 1
+-            forward_batch.extend_seq_lens[0] = max_extend_len
+-            forward_batch.seq_lens = max_extend_len
+-
+-        self.extend_attention_fwd(
+-            q.view(-1, layer.tp_q_head_num, layer.qk_head_dim),
+-            k.contiguous(),
+-            v.contiguous(),
+-            forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id),
+-            forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id),
+-            forward_batch.req_to_token_pool.req_to_token,
+-            forward_batch.req_pool_indices,
+-            forward_batch.seq_lens,
+-            forward_batch.extend_seq_lens,
+-            forward_batch.extend_start_loc,
+-            max_extend_len,
+-            o.view(-1, layer.tp_q_head_num, layer.v_head_dim),
+-            is_causal=True,
+-            layer_scaling=layer.scaling,
+-            logit_cap=layer.logit_cap,
+-        )
+-        return o
+-
+-    def forward_decode(
+-        self,
+-        q: torch.Tensor,
+-        k: torch.Tensor,
+-        v: torch.Tensor,
+-        layer: RadixAttention,
+-        forward_batch: ForwardBatch,
+-        save_kv_cache=True,
+-    ):
+-        # During torch.compile, there is a bug in rotary_emb that causes the
+-        # output value to have a 3D tensor shape. This reshapes the output correctly.
+-        q = q.reshape(-1, layer.tp_q_head_num * layer.qk_head_dim)
+-
+-        # TODO: reuse the buffer across layers
+-        if layer.qk_head_dim != layer.v_head_dim:
+-            o = q.new_empty((q.shape[0], layer.tp_q_head_num * layer.v_head_dim))
+-        else:
+-            o = torch.empty_like(q)
+-
+-        attn_logits, _ = self.forward_metadata
+-
+-        if save_kv_cache:
+-            forward_batch.token_to_kv_pool.set_kv_buffer(
+-                layer, forward_batch.out_cache_loc, k, v
+-            )
+-
+-        self.decode_attention_fwd(
+-            q.view(-1, layer.tp_q_head_num, layer.qk_head_dim),
+-            forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id),
+-            forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id),
+-            o.view(-1, layer.tp_q_head_num, layer.v_head_dim),
+-            forward_batch.req_to_token_pool.req_to_token,
+-            forward_batch.req_pool_indices,
+-            forward_batch.seq_lens,
+-            attn_logits,
+-            self.num_kv_splits,
+-            layer.scaling,
+-            layer.logit_cap,
+-        )
+-        return o
+diff --git a/python/sglang/srt/layers/attention/wave_ops/decode_attention.py b/python/sglang/srt/layers/attention/wave_ops/decode_attention.py
+deleted file mode 100644
+index 6273e55e..00000000
+--- a/python/sglang/srt/layers/attention/wave_ops/decode_attention.py
++++ /dev/null
+@@ -1,784 +0,0 @@
+-# Copyright 2023-2024 SGLang Team
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-# ==============================================================================
+-"""
+-Memory-efficient attention for decoding.
+-It supports page size = 1.
+-"""
+-
+-# Adapted from
+-# https://github.com/ModelTC/lightllm/blob/96353e868a840db4d103138caf15ed9dbea8c186/lightllm/models/deepseek2/triton_kernel/gqa_flash_decoding_stage1.py
+-# https://github.com/ModelTC/lightllm/blob/96353e868a840db4d103138caf15ed9dbea8c186/lightllm/models/deepseek2/triton_kernel/gqa_flash_decoding_stage2.py
+-
+-import math
+-import iree.turbine.kernel as tk
+-from iree.turbine.kernel.lang.global_symbols import *
+-from iree.turbine.kernel.wave.utils import (
+-    get_default_run_config,
+-    get_default_scheduling_params,
+-)
+-from iree.turbine.kernel.wave.constraints import MMAType
+-from iree.turbine.kernel.wave.templates.paged_decode_attention import (
+-    get_paged_decode_attention_kernels,
+-    paged_decode_attention_shape,
+-)
+-
+-import logging
+-
+-import triton
+-import triton.language as tl
+-
+-from sglang.srt.utils import is_hip
+-
+-is_hip_ = is_hip()
+-
+-logger = logging.getLogger(__name__)
+-import os
+-dump_generated_mlir = int(os.environ.get("WAVE_DUMP_MLIR", 0))
+-
+-# TODO: Remove this when triton>=3.2.0. This issue will not affect performance and accuracy.
+-logger.warning(
+-    "The following error message 'operation scheduled before its operands' can be ignored."
+-)
+-
+-
+-@triton.jit
+-def tanh(x):
+-    # Tanh is just a scaled sigmoid
+-    return 2 * tl.sigmoid(2 * x) - 1
+-
+-
+-@triton.jit
+-def _fwd_kernel_stage1(
+-    Q,
+-    K_Buffer,
+-    V_Buffer,
+-    sm_scale,
+-    Req_to_tokens,
+-    B_req_idx,
+-    B_Seqlen,
+-    Att_Out,
+-    stride_req_to_tokens_b,
+-    stride_qbs,
+-    stride_qh,
+-    stride_buf_kbs,
+-    stride_buf_kh,
+-    stride_buf_vbs,
+-    stride_buf_vh,
+-    stride_mid_ob,
+-    stride_mid_oh,
+-    stride_mid_os,
+-    kv_group_num: tl.constexpr,
+-    BLOCK_DMODEL: tl.constexpr,
+-    BLOCK_DV: tl.constexpr,
+-    BLOCK_N: tl.constexpr,
+-    NUM_KV_SPLITS: tl.constexpr,
+-    logit_cap: tl.constexpr,
+-    Lk: tl.constexpr,
+-    Lv: tl.constexpr,
+-):
+-    cur_batch = tl.program_id(0)
+-    cur_head = tl.program_id(1)
+-    split_kv_id = tl.program_id(2)
+-
+-    cur_kv_head = cur_head // kv_group_num
+-
+-    offs_d = tl.arange(0, BLOCK_DMODEL)
+-    offs_dv = tl.arange(0, BLOCK_DV)
+-    mask_d = offs_d < Lk
+-    mask_dv = offs_dv < Lv
+-    cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
+-    cur_batch_req_idx = tl.load(B_req_idx + cur_batch)
+-
+-    off_q = cur_batch * stride_qbs + cur_head * stride_qh + offs_d
+-    q = tl.load(Q + off_q, mask=mask_d, other=0.0)
+-
+-    kv_len_per_split = tl.cdiv(cur_batch_seq_len, NUM_KV_SPLITS)
+-    split_kv_start = kv_len_per_split * split_kv_id
+-    split_kv_end = tl.minimum(split_kv_start + kv_len_per_split, cur_batch_seq_len)
+-
+-    e_max = -float("inf")
+-    e_sum = 0.0
+-    acc = tl.zeros([BLOCK_DV], dtype=tl.float32)
+-
+-    if split_kv_end > split_kv_start:
+-        for start_n in range(split_kv_start, split_kv_end, BLOCK_N):
+-            offs_n = start_n + tl.arange(0, BLOCK_N)
+-            kv_loc = tl.load(
+-                Req_to_tokens + stride_req_to_tokens_b * cur_batch_req_idx + offs_n,
+-                mask=offs_n < split_kv_end,
+-                other=0,
+-            )
+-            offs_buf_k = (
+-                kv_loc[:, None] * stride_buf_kbs
+-                + cur_kv_head * stride_buf_kh
+-                + offs_d[None, :]
+-            )
+-            k = tl.load(
+-                K_Buffer + offs_buf_k,
+-                mask=(offs_n[:, None] < split_kv_end) & (mask_d[None, :]),
+-                other=0.0,
+-            )
+-            qk = tl.sum(q[None, :] * k, 1)
+-            qk *= sm_scale
+-
+-            if logit_cap > 0:
+-                qk = logit_cap * tanh(qk / logit_cap)
+-
+-            qk = tl.where(offs_n < split_kv_end, qk, float("-inf"))
+-
+-            offs_buf_v = (
+-                kv_loc[:, None] * stride_buf_vbs
+-                + cur_kv_head * stride_buf_vh
+-                + offs_dv[None, :]
+-            )
+-            v = tl.load(
+-                V_Buffer + offs_buf_v,
+-                mask=(offs_n[:, None] < split_kv_end) & (mask_dv[None, :]),
+-                other=0.0,
+-            )
+-
+-            n_e_max = tl.maximum(tl.max(qk, 0), e_max)
+-            re_scale = tl.exp(e_max - n_e_max)
+-            p = tl.exp(qk - n_e_max)
+-            acc *= re_scale
+-            acc += tl.sum(p[:, None] * v, 0)
+-
+-            e_sum = e_sum * re_scale + tl.sum(p, 0)
+-            e_max = n_e_max
+-
+-        offs_mid_o = (
+-            cur_batch * stride_mid_ob
+-            + cur_head * stride_mid_oh
+-            + split_kv_id * stride_mid_os
+-            + offs_dv
+-        )
+-
+-        tl.store(
+-            Att_Out + offs_mid_o,
+-            acc / e_sum,
+-            mask=(mask_dv),
+-        )
+-
+-        offs_mid_o_1 = (
+-            cur_batch * stride_mid_ob
+-            + cur_head * stride_mid_oh
+-            + split_kv_id * stride_mid_os
+-            + Lv
+-        )
+-
+-        tl.store(
+-            Att_Out + offs_mid_o_1,
+-            e_max + tl.log(e_sum),
+-        )
+-
+-
+-def _decode_att_m_fwd(
+-    q,
+-    k_buffer,
+-    v_buffer,
+-    att_out,
+-    Req_to_tokens,
+-    B_req_idx,
+-    B_Seqlen,
+-    num_kv_splits,
+-    sm_scale,
+-    logit_cap,
+-):
+-    BLOCK = 64
+-    NUM_KV_SPLITS = num_kv_splits
+-    Lk = k_buffer.shape[-1]
+-    Lv = v_buffer.shape[-1]
+-
+-    batch, head_num = B_req_idx.shape[0], q.shape[1]
+-
+-    grid = (batch, head_num, NUM_KV_SPLITS)
+-    kv_group_num = q.shape[1] // k_buffer.shape[1]
+-
+-    if kv_group_num == 1:
+-        num_warps = 4
+-    else:
+-        num_warps = 2
+-
+-    BLOCK_DMODEL = triton.next_power_of_2(Lk)
+-    BLOCK_DV = triton.next_power_of_2(Lv)
+-
+-    _fwd_kernel_stage1[grid](
+-        q,
+-        k_buffer,
+-        v_buffer,
+-        sm_scale,
+-        Req_to_tokens,
+-        B_req_idx,
+-        B_Seqlen,
+-        att_out,
+-        Req_to_tokens.stride(0),
+-        q.stride(0),
+-        q.stride(1),
+-        k_buffer.stride(0),
+-        k_buffer.stride(1),
+-        v_buffer.stride(0),
+-        v_buffer.stride(1),
+-        att_out.stride(0),
+-        att_out.stride(1),
+-        att_out.stride(2),
+-        kv_group_num=kv_group_num,
+-        BLOCK_DMODEL=BLOCK_DMODEL,
+-        BLOCK_DV=BLOCK_DV,
+-        BLOCK_N=BLOCK,
+-        NUM_KV_SPLITS=NUM_KV_SPLITS,
+-        logit_cap=logit_cap,
+-        num_warps=num_warps,
+-        num_stages=2,
+-        Lk=Lk,
+-        Lv=Lv,
+-    )
+-
+-
+-@triton.jit
+-def _fwd_grouped_kernel_stage1(
+-    Q,
+-    K_Buffer,
+-    V_Buffer,
+-    sm_scale,
+-    Req_to_tokens,
+-    B_req_idx,
+-    B_Seqlen,
+-    Att_Out,
+-    stride_req_to_tokens_b,
+-    stride_qbs,
+-    stride_qh,
+-    stride_buf_kbs,
+-    stride_buf_kh,
+-    stride_buf_vbs,
+-    stride_buf_vh,
+-    stride_mid_ob,
+-    stride_mid_oh,
+-    stride_mid_os,
+-    kv_group_num: tl.constexpr,
+-    q_head_num: tl.constexpr,
+-    BLOCK_DMODEL: tl.constexpr,
+-    BLOCK_DPE: tl.constexpr,
+-    BLOCK_DV: tl.constexpr,
+-    BLOCK_N: tl.constexpr,
+-    BLOCK_H: tl.constexpr,
+-    NUM_KV_SPLITS: tl.constexpr,
+-    logit_cap: tl.constexpr,
+-    Lk: tl.constexpr,
+-    Lv: tl.constexpr,
+-):
+-    cur_batch = tl.program_id(0)
+-    cur_head_id = tl.program_id(1)
+-    cur_kv_head = cur_head_id // tl.cdiv(kv_group_num, BLOCK_H)
+-    split_kv_id = tl.program_id(2)
+-
+-    if BLOCK_H < kv_group_num:
+-        VALID_BLOCK_H: tl.constexpr = BLOCK_H
+-    else:
+-        VALID_BLOCK_H: tl.constexpr = kv_group_num
+-    cur_head = cur_head_id * VALID_BLOCK_H + tl.arange(0, BLOCK_H)
+-    mask_h = cur_head < (cur_head_id + 1) * VALID_BLOCK_H
+-    mask_h = mask_h & (cur_head < q_head_num)
+-
+-    offs_d = tl.arange(0, BLOCK_DMODEL)
+-    offs_dv = tl.arange(0, BLOCK_DV)
+-    mask_d = offs_d < Lk
+-    mask_dv = offs_dv < Lv
+-    cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
+-    cur_batch_req_idx = tl.load(B_req_idx + cur_batch)
+-
+-    offs_q = cur_batch * stride_qbs + cur_head[:, None] * stride_qh + offs_d[None, :]
+-    q = tl.load(Q + offs_q, mask=(mask_h[:, None]) & (mask_d[None, :]), other=0.0)
+-
+-    if BLOCK_DPE > 0:
+-        offs_dpe = BLOCK_DMODEL + tl.arange(0, BLOCK_DPE)
+-        mask_dpe = offs_dpe < Lk
+-        off_qpe = (
+-            cur_batch * stride_qbs + cur_head[:, None] * stride_qh + offs_dpe[None, :]
+-        )
+-        qpe = tl.load(
+-            Q + off_qpe, mask=(mask_h[:, None]) & (mask_dpe[None, :]), other=0.0
+-        )
+-
+-    kv_len_per_split = tl.cdiv(cur_batch_seq_len, NUM_KV_SPLITS)
+-    split_kv_start = kv_len_per_split * split_kv_id
+-    split_kv_end = tl.minimum(split_kv_start + kv_len_per_split, cur_batch_seq_len)
+-
+-    e_max = tl.zeros([BLOCK_H], dtype=tl.float32) - float("inf")
+-    e_sum = tl.zeros([BLOCK_H], dtype=tl.float32)
+-    acc = tl.zeros([BLOCK_H, BLOCK_DV], dtype=tl.float32)
+-
+-    if split_kv_end > split_kv_start:
+-        for start_n in range(split_kv_start, split_kv_end, BLOCK_N):
+-            offs_n = start_n + tl.arange(0, BLOCK_N)
+-            kv_loc = tl.load(
+-                Req_to_tokens + stride_req_to_tokens_b * cur_batch_req_idx + offs_n,
+-                mask=offs_n < split_kv_end,
+-                other=0,
+-            )
+-            offs_buf_k = (
+-                kv_loc[None, :] * stride_buf_kbs
+-                + cur_kv_head * stride_buf_kh
+-                + offs_d[:, None]
+-            )
+-            k = tl.load(
+-                K_Buffer + offs_buf_k,
+-                mask=(offs_n[None, :] < split_kv_end) & (mask_d[:, None]),
+-                other=0.0,
+-            )
+-            qk = tl.dot(q, k.to(q.dtype))
+-            if BLOCK_DPE > 0:
+-                offs_buf_kpe = (
+-                    kv_loc[None, :] * stride_buf_kbs
+-                    + cur_kv_head * stride_buf_kh
+-                    + offs_dpe[:, None]
+-                )
+-                kpe = tl.load(
+-                    K_Buffer + offs_buf_kpe,
+-                    mask=(offs_n[None, :] < split_kv_end) & (mask_dpe[:, None]),
+-                    other=0.0,
+-                )
+-                qk += tl.dot(qpe, kpe.to(qpe.dtype))
+-            qk *= sm_scale
+-
+-            if logit_cap > 0:
+-                qk = logit_cap * tanh(qk / logit_cap)
+-
+-            qk = tl.where(
+-                mask_h[:, None] & (offs_n[None, :] < split_kv_end), qk, float("-inf")
+-            )
+-
+-            offs_buf_v = (
+-                kv_loc[:, None] * stride_buf_vbs
+-                + cur_kv_head * stride_buf_vh
+-                + offs_dv[None, :]
+-            )
+-            v = tl.load(
+-                V_Buffer + offs_buf_v,
+-                mask=(offs_n[:, None] < split_kv_end) & (mask_dv[None, :]),
+-                other=0.0,
+-            )
+-
+-            n_e_max = tl.maximum(tl.max(qk, 1), e_max)
+-            re_scale = tl.exp(e_max - n_e_max)
+-            p = tl.exp(qk - n_e_max[:, None])
+-            acc *= re_scale[:, None]
+-            acc += tl.dot(p.to(v.dtype), v)
+-
+-            e_sum = e_sum * re_scale + tl.sum(p, 1)
+-            e_max = n_e_max
+-
+-        offs_mid_o = (
+-            cur_batch * stride_mid_ob
+-            + cur_head[:, None] * stride_mid_oh
+-            + split_kv_id * stride_mid_os
+-            + offs_dv[None, :]
+-        )
+-
+-        tl.store(
+-            Att_Out + offs_mid_o,
+-            acc / e_sum[:, None],
+-            mask=(mask_h[:, None]) & (mask_dv[None, :]),
+-        )
+-
+-        offs_mid_o_1 = (
+-            cur_batch * stride_mid_ob
+-            + cur_head * stride_mid_oh
+-            + split_kv_id * stride_mid_os
+-            + Lv
+-        )
+-
+-        tl.store(
+-            Att_Out + offs_mid_o_1,
+-            e_max + tl.log(e_sum),
+-            mask=mask_h,
+-        )
+-
+-
+-def _decode_grouped_att_m_fwd(
+-    q,
+-    k_buffer,
+-    v_buffer,
+-    att_out,
+-    Req_to_tokens,
+-    B_req_idx,
+-    B_Seqlen,
+-    num_kv_splits,
+-    sm_scale,
+-    logit_cap,
+-):
+-    BLOCK = 32
+-    Lk = k_buffer.shape[-1]
+-    Lv = v_buffer.shape[-1]
+-
+-    # [TODO] work around shmem limit on MI3xx
+-    if is_hip_ and Lk >= 576:
+-        BLOCK = 16
+-
+-    if Lk == 576:
+-        BLOCK_DMODEL = 512
+-        BLOCK_DPE = 64
+-    elif Lk == 288:
+-        BLOCK_DMODEL = 256
+-        BLOCK_DPE = 32
+-    else:
+-        BLOCK_DMODEL = triton.next_power_of_2(Lk)
+-        BLOCK_DPE = 0
+-    BLOCK_DV = triton.next_power_of_2(Lv)
+-
+-    batch, head_num = B_req_idx.shape[0], q.shape[1]
+-    kv_group_num = q.shape[1] // k_buffer.shape[1]
+-
+-    BLOCK_H = 16
+-    NUM_KV_SPLITS = num_kv_splits
+-    grid = (
+-        batch,
+-        triton.cdiv(head_num, min(BLOCK_H, kv_group_num)),
+-        NUM_KV_SPLITS,
+-    )
+-
+-    extra_kargs = {}
+-    if is_hip_:
+-        # https://rocm.docs.amd.com/en/docs-6.2.0/how-to/llm-fine-tuning-optimization/optimizing-triton-kernel.html
+-        # https://github.com/triton-lang/triton/blob/main/third_party/amd/backend/compiler.py
+-        extra_kargs = {"waves_per_eu": 4, "matrix_instr_nonkdim": 16, "kpack": 2}
+-
+-    _fwd_grouped_kernel_stage1[grid](
+-        q,
+-        k_buffer,
+-        v_buffer,
+-        sm_scale,
+-        Req_to_tokens,
+-        B_req_idx,
+-        B_Seqlen,
+-        att_out,
+-        Req_to_tokens.stride(0),
+-        q.stride(0),
+-        q.stride(1),
+-        k_buffer.stride(0),
+-        k_buffer.stride(1),
+-        v_buffer.stride(0),
+-        v_buffer.stride(1),
+-        att_out.stride(0),
+-        att_out.stride(1),
+-        att_out.stride(2),
+-        kv_group_num=kv_group_num,
+-        q_head_num=head_num,
+-        BLOCK_DMODEL=BLOCK_DMODEL,
+-        BLOCK_DPE=BLOCK_DPE,
+-        BLOCK_DV=BLOCK_DV,
+-        BLOCK_N=BLOCK,
+-        BLOCK_H=BLOCK_H,
+-        NUM_KV_SPLITS=NUM_KV_SPLITS,
+-        logit_cap=logit_cap,
+-        num_warps=4,
+-        num_stages=2,
+-        Lk=Lk,
+-        Lv=Lv,
+-        **extra_kargs,
+-    )
+-
+-
+-@triton.jit
+-def _fwd_kernel_stage2(
+-    Mid_O,
+-    O,
+-    B_Seqlen,
+-    stride_mid_ob,
+-    stride_mid_oh,
+-    stride_mid_os,
+-    stride_obs,
+-    stride_oh,
+-    NUM_KV_SPLITS: tl.constexpr,
+-    BLOCK_DV: tl.constexpr,
+-    Lv: tl.constexpr,
+-):
+-    cur_batch = tl.program_id(0)
+-    cur_head = tl.program_id(1)
+-
+-    cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
+-
+-    offs_d = tl.arange(0, BLOCK_DV)
+-    mask_d = offs_d < Lv
+-
+-    e_sum = 0.0
+-    e_max = -float("inf")
+-    acc = tl.zeros([BLOCK_DV], dtype=tl.float32)
+-
+-    offs_v = cur_batch * stride_mid_ob + cur_head * stride_mid_oh + offs_d
+-    offs_logic = cur_batch * stride_mid_ob + cur_head * stride_mid_oh + Lv
+-
+-    for split_kv_id in range(0, NUM_KV_SPLITS):
+-        kv_len_per_split = tl.cdiv(cur_batch_seq_len, NUM_KV_SPLITS)
+-        split_kv_start = kv_len_per_split * split_kv_id
+-        split_kv_end = tl.minimum(split_kv_start + kv_len_per_split, cur_batch_seq_len)
+-
+-        if split_kv_end > split_kv_start:
+-            tv = tl.load(
+-                Mid_O + offs_v + split_kv_id * stride_mid_os, mask=mask_d, other=0.0
+-            )
+-            tlogic = tl.load(Mid_O + offs_logic + split_kv_id * stride_mid_os)
+-            n_e_max = tl.maximum(tlogic, e_max)
+-
+-            old_scale = tl.exp(e_max - n_e_max)
+-            acc *= old_scale
+-            exp_logic = tl.exp(tlogic - n_e_max)
+-            acc += exp_logic * tv
+-
+-            e_sum = e_sum * old_scale + exp_logic
+-            e_max = n_e_max
+-
+-    tl.store(
+-        O + cur_batch * stride_obs + cur_head * stride_oh + offs_d,
+-        acc / e_sum,
+-        mask=mask_d,
+-    )
+-
+-
+-def _decode_softmax_reducev_fwd(
+-    logits,
+-    q,
+-    o,
+-    v_buffer,
+-    b_seq_len,
+-    num_kv_splits,
+-):
+-    batch, head_num = q.shape[0], q.shape[1]
+-    Lv = v_buffer.shape[-1]
+-    BLOCK_DV = triton.next_power_of_2(Lv)
+-
+-    NUM_KV_SPLITS = num_kv_splits
+-
+-    extra_kargs = {}
+-    if is_hip_:
+-        # https://rocm.docs.amd.com/en/docs-6.2.0/how-to/llm-fine-tuning-optimization/optimizing-triton-kernel.html
+-        # https://github.com/triton-lang/triton/blob/main/third_party/amd/backend/compiler.py
+-        extra_kargs = {"waves_per_eu": 4, "matrix_instr_nonkdim": 16, "kpack": 2}
+-
+-    grid = (batch, head_num)
+-    _fwd_kernel_stage2[grid](
+-        logits,
+-        o,
+-        b_seq_len,
+-        logits.stride(0),
+-        logits.stride(1),
+-        logits.stride(2),
+-        o.stride(0),
+-        o.stride(1),
+-        NUM_KV_SPLITS=NUM_KV_SPLITS,
+-        BLOCK_DV=BLOCK_DV,
+-        Lv=Lv,
+-        num_warps=4,
+-        num_stages=2,
+-        **extra_kargs,
+-    )
+-
+-
+-def decode_attention_fwd_normal(
+-    q,
+-    k_buffer,
+-    v_buffer,
+-    o,
+-    req_to_token,
+-    b_req_idx,
+-    b_seq_len,
+-    attn_logits,
+-    num_kv_splits,
+-    sm_scale,
+-    logit_cap=0.0,
+-):
+-    _decode_att_m_fwd(
+-        q,
+-        k_buffer,
+-        v_buffer,
+-        attn_logits,
+-        req_to_token,
+-        b_req_idx,
+-        b_seq_len,
+-        num_kv_splits,
+-        sm_scale,
+-        logit_cap,
+-    )
+-    _decode_softmax_reducev_fwd(attn_logits, q, o, v_buffer, b_seq_len, num_kv_splits)
+-
+-
+-def decode_attention_fwd_grouped(
+-    q,
+-    k_buffer,
+-    v_buffer,
+-    o,
+-    req_to_token,
+-    b_req_idx,
+-    b_seq_len,
+-    attn_logits,
+-    num_kv_splits,
+-    sm_scale,
+-    logit_cap=0.0,
+-):
+-    _decode_grouped_att_m_fwd(
+-        q,
+-        k_buffer,
+-        v_buffer,
+-        attn_logits,
+-        req_to_token,
+-        b_req_idx,
+-        b_seq_len,
+-        num_kv_splits,
+-        sm_scale,
+-        logit_cap,
+-    )
+-    _decode_softmax_reducev_fwd(attn_logits, q, o, v_buffer, b_seq_len, num_kv_splits)
+-
+-
+-def decode_attention_wave(
+-    q,
+-    k_buffer,
+-    v_buffer,
+-    o,
+-    req_to_token,
+-    b_req_idx,
+-    b_seq_len,
+-    attn_logits,
+-    attn_logits_max,
+-    num_kv_splits,
+-    sm_scale,
+-    logit_cap=0.0,
+-):
+-
+-    num_seqs, num_query_heads, head_size = q.shape
+-    _, _, num_kv_heads, _ = k_buffer.shape
+-    _, _, _, head_size_kv = v_buffer.shape
+-    block_size = 32
+-    shape = paged_decode_attention_shape(
+-        num_query_heads,
+-        num_kv_heads,
+-        head_size,
+-        head_size_kv,
+-        block_size,
+-        num_seqs,
+-        None,
+-    )
+-
+-    # Get the kernels (either compile or load from cache).
+-    mfma_variant = MMAType.F32_16x16x16_F16
+-    (
+-        phase_0,
+-        phase_1,
+-        hyperparams_0,
+-        hyperparams_1,
+-    ) = get_paged_decode_attention_kernels(
+-        shape,
+-        mfma_variant,
+-        num_kv_splits,
+-        k_buffer.shape,
+-        v_buffer.shape,
+-        req_to_token.shape,
+-    )
+-    hyperparams_0.update(get_default_scheduling_params())
+-    hyperparams_1.update(get_default_scheduling_params())
+-    config = get_default_run_config()
+-
+-    log2e = 1.44269504089
+-    dk_sqrt = math.sqrt(1.0 / head_size)
+-
+-    with tk.gen.TestLaunchContext(
+-        hyperparams_0,
+-        canonicalize=True,
+-        run=True,
+-        run_bench=False,
+-        run_config=config,
+-        schedule=False,
+-        use_scheduling_barriers=False,
+-    ):
+-        # TODO: Add scaling of QK as part of kernel.
+-        mb_qk = phase_0(
+-            q * dk_sqrt * log2e,
+-            k_buffer,
+-            v_buffer,
+-            b_req_idx,
+-            b_seq_len,
+-            req_to_token,
+-            attn_logits,
+-            attn_logits_max,
+-        )
+-        if dump_generated_mlir:
+-            filename = f"wave_decode_attention_phase0_{'x'.join(map(str, shape))}.mlir"
+-            with open(filename, "w") as f:
+-                f.write(mb_qk.module_op.get_asm())
+-
+-
+-    with tk.gen.TestLaunchContext(
+-        hyperparams_1,
+-        canonicalize=True,
+-        run=True,
+-        run_bench=False,
+-        run_config=config,
+-        schedule=False,
+-        use_scheduling_barriers=False,
+-    ):
+-        mb_sv = phase_1(attn_logits, attn_logits_max, o)
+-        if dump_generated_mlir:
+-            filename = f"wave_decode_attention_phase1_{'x'.join(map(str, shape))}.mlir"
+-            with open(filename, "w") as f:
+-                f.write(mb_sv.module_op.get_asm())
+-
+-
+-
+-def decode_attention_fwd(
+-    q,
+-    k_buffer,
+-    v_buffer,
+-    o,
+-    req_to_token,
+-    b_req_idx,
+-    b_seq_len,
+-    attn_logits,
+-    attn_logits_max,
+-    num_kv_splits,
+-    sm_scale,
+-    logit_cap=0.0,
+-):
+-    assert num_kv_splits == attn_logits.shape[2]
+-    kv_group_num = q.shape[1] // v_buffer.shape[1]
+-
+-    if kv_group_num == 1:
+-        # MHA
+-        decode_attention_fwd_normal(
+-            q,
+-            k_buffer,
+-            v_buffer,
+-            o,
+-            req_to_token,
+-            b_req_idx,
+-            b_seq_len,
+-            attn_logits,
+-            num_kv_splits,
+-            sm_scale,
+-            logit_cap,
+-        )
+-    else:
+-        # GQA/MQA/MLA
+-        decode_attention_wave(
+-            q,
+-            k_buffer,
+-            v_buffer,
+-            o,
+-            req_to_token,
+-            b_req_idx,
+-            b_seq_len,
+-            attn_logits,
+-            attn_logits_max,
+-            num_kv_splits,
+-            sm_scale,
+-            logit_cap,
+-        )
+diff --git a/python/sglang/srt/layers/attention/wave_ops/extend_attention.py b/python/sglang/srt/layers/attention/wave_ops/extend_attention.py
+deleted file mode 100644
+index 687216d4..00000000
+--- a/python/sglang/srt/layers/attention/wave_ops/extend_attention.py
++++ /dev/null
+@@ -1,137 +0,0 @@
+-# Copyright 2023-2024 SGLang Team
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-# ==============================================================================
+-"""
+-Memory-efficient attention for prefill.
+-It supporst page size = 1.
+-"""
+-
+-# Adapted from
+-# https://github.com/ModelTC/lightllm/blob/f2a54f0912293f683bf1d1695fd12c4098a5bf82/lightllm/models/llama/triton_kernel/context_flashattention_nopad.py#L1
+-
+-import torch
+-import math
+-
+-import iree.turbine.kernel as tk
+-from iree.turbine.kernel.lang.global_symbols import *
+-from iree.turbine.kernel.wave.utils import (
+-    get_default_run_config,
+-    get_default_scheduling_params,
+-)
+-from iree.turbine.kernel.wave.constraints import MMAType
+-
+-from iree.turbine.kernel.wave.templates.attention_common import AttentionShape
+-from iree.turbine.kernel.wave.templates.extend_attention import (
+-    get_extend_attention_kernel,
+-)
+-
+-import os
+-
+-dump_generated_mlir = int(os.environ.get("WAVE_DUMP_MLIR", 0))
+-
+-
+-def extend_attention_wave(
+-    q_extend,
+-    k_extend,
+-    v_extend,
+-    k_buffer,
+-    v_buffer,
+-    req_to_tokens,
+-    b_req_idx,
+-    b_seq_len,
+-    b_seq_len_extend,
+-    b_start_loc_extend,
+-    max_seq_len,
+-    output,
+-    is_causal=True,
+-    layer_scaling=None,
+-    logit_cap=0,
+-):
+-
+-    shape = AttentionShape(
+-        num_query_heads=q_extend.shape[1],
+-        num_kv_heads=k_extend.shape[1],
+-        head_size=q_extend.shape[2],
+-        head_size_kv=k_extend.shape[2],
+-        num_seqs=b_seq_len.shape[0],
+-        max_seq_len=max_seq_len,
+-        block_size=64,
+-    )
+-
+-    assert shape.num_query_heads % shape.num_kv_heads == 0
+-
+-    # Run the wave kernel.
+-    mfma_variant = (MMAType.F32_16x16x16_F16, MMAType.F32_16x16x16_F16)
+-    (
+-        extend_attention,
+-        hyperparams,
+-        dynamic_symbols,
+-        dynamic_symbols_map,
+-    ) = get_extend_attention_kernel(
+-        shape,
+-        mfma_variant,
+-        q_extend.shape,
+-        k_extend.shape,
+-        v_extend.shape,
+-        req_to_tokens.shape,
+-        k_buffer.shape,
+-        v_buffer.shape,
+-        output.shape,
+-        input_dtype=q_extend.dtype,
+-        output_dtype=output.dtype,
+-        size_dtype=b_seq_len.dtype,
+-        is_causal=is_causal,
+-        layer_scaling=layer_scaling,
+-        logit_cap=logit_cap,
+-    )
+-
+-    hyperparams.update(get_default_scheduling_params())
+-    config = get_default_run_config()
+-
+-    with tk.gen.TestLaunchContext(
+-        hyperparams,
+-        canonicalize=True,
+-        run=True,
+-        run_bench=False,
+-        run_config=config,
+-        schedule=False,
+-        use_scheduling_barriers=False,
+-        dynamic_symbols=dynamic_symbols,
+-        dynamic_symbols_map=dynamic_symbols_map,
+-    ):
+-        # TODO: Add scaling of QK as part of kernel.
+-        mb = extend_attention(
+-            q_extend,
+-            k_extend,
+-            v_extend,
+-            k_buffer,
+-            v_buffer,
+-            req_to_tokens,
+-            b_req_idx,
+-            b_seq_len,
+-            b_seq_len_extend,
+-            b_start_loc_extend,
+-            output,
+-        )
+-
+-        if dump_generated_mlir:
+-            shape_list = [
+-                q_extend.shape[0],
+-                q_extend.shape[1],
+-                k_extend.shape[1],
+-                q_extend.shape[2],
+-                k_extend.shape[2],
+-            ]
+-            filename = f"wave_prefill_attention_{'x'.join(map(str, shape_list))}.mlir"
+-            with open(filename, "w") as f:
+-                f.write(mb.module_op.get_asm())
+diff --git a/python/sglang/srt/layers/attention/wave_ops/prefill_attention.py b/python/sglang/srt/layers/attention/wave_ops/prefill_attention.py
+deleted file mode 100644
+index 110e3ac2..00000000
+--- a/python/sglang/srt/layers/attention/wave_ops/prefill_attention.py
++++ /dev/null
+@@ -1,103 +0,0 @@
+-# Copyright 2023-2024 SGLang Team
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-# ==============================================================================
+-"""
+-Memory-efficient attention for prefill.
+-It supporst page size = 1.
+-"""
+-
+-# Adapted from
+-# https://github.com/ModelTC/lightllm/blob/f2a54f0912293f683bf1d1695fd12c4098a5bf82/lightllm/models/llama/triton_kernel/context_flashattention_nopad.py#L1
+-
+-import torch
+-import math
+-
+-import iree.turbine.kernel as tk
+-from iree.turbine.kernel.lang.global_symbols import *
+-from iree.turbine.kernel.wave.utils import (
+-    get_default_run_config,
+-    get_default_scheduling_params,
+-)
+-from iree.turbine.kernel.wave.constraints import MMAType
+-
+-from iree.turbine.kernel.wave.templates.attention_common import AttentionShape
+-from iree.turbine.kernel.wave.templates.prefill_attention import (
+-    get_prefill_attention_kernel,
+-)
+-
+-import os
+-dump_generated_mlir = int(os.environ.get("WAVE_DUMP_MLIR", 0))
+-
+-def prefill_attention_wave(
+-    q, k, v, o, b_start_loc, b_seq_len, max_seq_len, is_causal=True
+-):
+-
+-    # if not is_causal:
+-    #     raise NotImplementedError("non causal mask not supported yet on prefill_attention wave backend.")
+-    shape = AttentionShape(
+-        num_query_heads=q.shape[1],
+-        num_kv_heads=k.shape[1],
+-        head_size=q.shape[2],
+-        head_size_kv=k.shape[2],
+-        num_seqs=b_seq_len.shape[0],
+-        max_seq_len=max_seq_len,
+-        total_seq_len=q.shape[0],
+-    )
+-
+-    assert shape.num_query_heads % shape.num_kv_heads == 0
+-
+-    output_shape = (shape.total_seq_len, shape.num_query_heads, shape.head_size_kv)
+-    # Run the wave kernel.
+-    mfma_variant =(MMAType.F32_16x16x16_F16, MMAType.F32_16x16x16_F16)
+-    (prefill, hyperparams) = get_prefill_attention_kernel(
+-        shape,
+-        mfma_variant,
+-        q.shape,
+-        k.shape,
+-        v.shape,
+-        output_shape,
+-        input_dtype=q.dtype,
+-        output_dtype=o.dtype,
+-        size_dtype=b_seq_len.dtype,
+-    )
+-
+-    hyperparams.update(get_default_scheduling_params())
+-    config = get_default_run_config()
+-
+-    log2e = 1.44269504089
+-    dk_sqrt = math.sqrt(1.0 / shape.head_size)
+-
+-    with tk.gen.TestLaunchContext(
+-        hyperparams,
+-        canonicalize=True,
+-        run=True,
+-        run_bench=False,
+-        run_config=config,
+-        schedule=False,
+-        use_scheduling_barriers=False,
+-    ):
+-        # TODO: Add scaling of QK as part of kernel.
+-        # TODO: Add variant of non-transposed V attention kernel.
+-        mb = prefill(
+-            q * dk_sqrt * log2e,
+-            k,
+-            v,
+-            b_start_loc,
+-            b_seq_len,
+-            o,
+-        )
+-        if dump_generated_mlir:
+-            shape_list = [q.shape[0], q.shape[1], k.shape[1], q.shape[2], k.shape[2]]
+-            filename = f"wave_prefill_attention_{'x'.join(map(str, shape_list))}.mlir"
+-            with open(filename, "w") as f:
+-                f.write(mb.module_op.get_asm())
+diff --git a/python/sglang/srt/model_executor/model_runner.py b/python/sglang/srt/model_executor/model_runner.py
+index 7597662a..5b19c77e 100644
+--- a/python/sglang/srt/model_executor/model_runner.py
++++ b/python/sglang/srt/model_executor/model_runner.py
+@@ -36,7 +36,6 @@ from sglang.srt.layers.attention.double_sparsity_backend import DoubleSparseAttn
+ from sglang.srt.layers.attention.flashinfer_backend import FlashInferAttnBackend
+ from sglang.srt.layers.attention.torch_native_backend import TorchNativeAttnBackend
+ from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
+-from sglang.srt.layers.attention.wave_backend import WaveAttnBackend
+ from sglang.srt.layers.dp_attention import (
+     get_attention_tp_group,
+     get_attention_tp_size,
+@@ -690,8 +689,6 @@ class ModelRunner:
+                 self.attn_backend = DoubleSparseAttnBackend(self)
+             else:
+                 self.attn_backend = TritonAttnBackend(self)
+-        elif self.server_args.attention_backend == "wave":
+-            self.attn_backend = WaveAttnBackend(self)
+         elif self.server_args.attention_backend == "torch_native":
+             self.attn_backend = TorchNativeAttnBackend(self)
+         else:
+diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
+index e6c68a79..8c5ad0b9 100644
+--- a/python/sglang/srt/server_args.py
++++ b/python/sglang/srt/server_args.py
+@@ -666,7 +666,7 @@ class ServerArgs:
+         parser.add_argument(
+             "--attention-backend",
+             type=str,
+-            choices=["flashinfer", "triton", "torch_native", "wave"],
++            choices=["flashinfer", "triton", "torch_native"],
+             default=ServerArgs.attention_backend,
+             help="Choose the kernels for attention layers.",
+         )
+diff --git a/test/srt/test_wave_attention_backend.py b/test/srt/test_wave_attention_backend.py
+deleted file mode 100644
+index f6ccae57..00000000
+--- a/test/srt/test_wave_attention_backend.py
++++ /dev/null
+@@ -1,61 +0,0 @@
+-"""
+-Usage:
+-python3 -m unittest test_triton_attention_backend.TestTritonAttnBackend.test_mmlu
+-"""
+-
+-import unittest
+-from types import SimpleNamespace
+-
+-from sglang.srt.utils import kill_process_tree
+-from sglang.test.run_eval import run_eval
+-from sglang.test.test_utils import (
+-    DEFAULT_MODEL_NAME_FOR_TEST,
+-    DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
+-    DEFAULT_URL_FOR_TEST,
+-    is_in_ci,
+-    popen_launch_server,
+-    run_bench_one_batch,
+-)
+-
+-
+-class TestWaveAttnBackend(unittest.TestCase):
+-    def test_latency(self):
+-        output_throughput = run_bench_one_batch(
+-            DEFAULT_MODEL_NAME_FOR_TEST,
+-            [
+-                "--attention-backend",
+-                "wave",
+-                "--enable-torch-compile",
+-            ],
+-        )
+-
+-        if is_in_ci():
+-            self.assertGreater(output_throughput, 153)
+-
+-    def test_mmlu(self):
+-        model = DEFAULT_MODEL_NAME_FOR_TEST
+-        base_url = DEFAULT_URL_FOR_TEST
+-        process = popen_launch_server(
+-            model,
+-            base_url,
+-            timeout=DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
+-            other_args=["--attention-backend", "wave"],
+-        )
+-
+-        try:
+-            args = SimpleNamespace(
+-                base_url=base_url,
+-                model=model,
+-                eval_name="mmlu",
+-                num_examples=64,
+-                num_threads=32,
+-            )
+-
+-            metrics = run_eval(args)
+-            self.assertGreaterEqual(metrics["score"], 0.65)
+-        finally:
+-            kill_process_tree(process.pid)
+-
+-
+-if __name__ == "__main__":
+-    unittest.main()
+diff --git a/test/srt/test_wave_attention_kernels.py b/test/srt/test_wave_attention_kernels.py
+deleted file mode 100644
+index 03cbca43..00000000
+--- a/test/srt/test_wave_attention_kernels.py
++++ /dev/null
+@@ -1,286 +0,0 @@
+-import random
+-import unittest
+-
+-import torch
+-
+-from sglang.srt.layers.attention.wave_ops.decode_attention import (
+-    decode_attention_wave,
+-)
+-from sglang.srt.layers.attention.triton_ops.decode_attention import (
+-    decode_attention_fwd_grouped as triton_decode_attention_fwd_grouped,
+-)
+-from sglang.srt.layers.attention.wave_ops.prefill_attention import (
+-    prefill_attention_wave,
+-)
+-from sglang.srt.layers.attention.triton_ops.prefill_attention import (
+-    context_attention_fwd,
+-)
+-from sglang.srt.layers.attention.wave_ops.extend_attention import (
+-    extend_attention_wave,
+-)
+-from sglang.srt.layers.attention.triton_ops.extend_attention import (
+-    redundant_attention,
+-)
+-
+-class TestWaveAttention(unittest.TestCase):
+-
+-    def _set_all_seeds(self, seed):
+-        """Set all random seeds for reproducibility."""
+-        random.seed(seed)
+-        torch.manual_seed(seed)
+-        torch.cuda.manual_seed(seed)
+-        torch.cuda.manual_seed_all(seed)
+-        torch.backends.cudnn.deterministic = True
+-        torch.backends.cudnn.benchmark = False
+-
+-    def setUp(self):
+-        # Set seeds before each test method
+-        self._set_all_seeds(42)
+-
+-    def _test_extend_attention_once(self, B, N_CTX, H_Q, H_KV, D):
+-        dtype = torch.float16
+-        extend_seq_len = 128
+-
+-        b_seq_len_prefix = torch.full(
+-            (B,), N_CTX // B, dtype=torch.int32, device="cuda"
+-        )
+-        b_seq_len_extend = torch.full(
+-            (B,), extend_seq_len, dtype=torch.int32, device="cuda"
+-        )
+-        b_seq_len = b_seq_len_prefix + b_seq_len_extend
+-        max_len_in_batch = torch.max(b_seq_len, 0)[0].item()
+-
+-        b_req_idx = torch.arange(B, dtype=torch.int32, device="cuda")
+-        req_to_tokens = torch.empty(
+-            (B, max_len_in_batch), dtype=torch.int32, device="cuda"
+-        )
+-        b_start_loc = torch.zeros((B,), dtype=torch.int32, device="cuda")
+-        b_start_loc[1:] = torch.cumsum(b_seq_len[:-1], 0)
+-        b_start_loc_extend = torch.zeros((B,), dtype=torch.int32, device="cuda")
+-        b_start_loc_extend[1:] = torch.cumsum(b_seq_len_extend[:-1], 0)
+-        for i in range(B):
+-            req_to_tokens[i, : b_seq_len[i]] = torch.arange(
+-                b_start_loc[i], b_start_loc[i] + b_seq_len[i]
+-            )
+-
+-        total_token_num = torch.sum(b_seq_len).item()
+-        extend_token_num = torch.sum(b_seq_len_extend).item()
+-        k_buffer = torch.empty(
+-            (total_token_num, H_KV, D), dtype=dtype, device="cuda"
+-        ).normal_(mean=0.1, std=0.2)
+-        v_buffer = torch.empty(
+-            (total_token_num, H_KV, D), dtype=dtype, device="cuda"
+-        ).normal_(mean=0.1, std=0.2)
+-
+-        k_extend = torch.empty((extend_token_num, H_KV, D), dtype=dtype, device="cuda")
+-        v_extend = torch.empty((extend_token_num, H_KV, D), dtype=dtype, device="cuda")
+-        q_extend = torch.empty((extend_token_num, H_Q, D), dtype=dtype, device="cuda")
+-        for i in range(B):
+-            extend_start_in_buffer = b_start_loc[i] + b_seq_len_prefix[i]
+-            extend_end_in_buffer = b_start_loc[i] + b_seq_len[i]
+-            extend_start = b_start_loc_extend[i]
+-            extend_end = b_start_loc_extend[i] + b_seq_len_extend[i]
+-            k_extend[extend_start:extend_end] = k_buffer[
+-                extend_start_in_buffer:extend_end_in_buffer
+-            ]
+-            v_extend[extend_start:extend_end] = v_buffer[
+-                extend_start_in_buffer:extend_end_in_buffer
+-            ]
+-            q_extend[extend_start:extend_end] = torch.empty(
+-                (b_seq_len_extend[i], H_Q, D), dtype=dtype, device="cuda"
+-            ).normal_(mean=0.1, std=0.2)
+-
+-        o_redundant = torch.empty(
+-            (extend_token_num, H_Q, D), dtype=dtype, device="cuda"
+-        )
+-
+-        b_seq_len_extend = b_seq_len - b_seq_len_prefix
+-        b_start_loc_extend = torch.zeros_like(b_seq_len)
+-        b_start_loc_extend[1:] = torch.cumsum(b_seq_len_extend[:-1], 0)
+-        max_len_extend = torch.max(b_seq_len_extend, 0)[0].item()
+-
+-        redundant_attention(
+-            q_extend,
+-            o_redundant,
+-            k_buffer,
+-            v_buffer,
+-            b_req_idx,
+-            b_start_loc,
+-            b_seq_len,
+-            b_seq_len_prefix,
+-            max_len_in_batch,
+-        )
+-
+-        o_wave = torch.empty((extend_token_num, H_Q, D), dtype=dtype, device="cuda")
+-
+-        extend_attention_wave(
+-            q_extend,
+-            k_extend,
+-            v_extend,
+-            k_buffer,
+-            v_buffer,
+-            req_to_tokens,
+-            b_req_idx,
+-            b_seq_len,
+-            b_seq_len_extend,
+-            b_start_loc_extend,
+-            max_len_extend,
+-            o_wave,
+-            is_causal=True,
+-        )
+-
+-        self.assertTrue(torch.allclose(o_wave, o_redundant, rtol=1e-2))
+-
+-    def test_extend_attention(self):
+-
+-        # Define the varying parameter values
+-        attention_values = [128]
+-
+-        # Loop through the values and call the method
+-        for value in attention_values:
+-            self._test_extend_attention_once(32, 16384, 6, 1, value)
+-
+-    def _test_grouped_decode_attention_once(self, B, S, H_Q, H_KV, D, D_V):
+-        dtype = torch.float16
+-        seq_len = S  # This represents the number of tokens already in the sequence
+-        total_tokens = B * seq_len
+-        sm_scale = 1.0 / (D**0.5)
+-        num_kv_splits = 8
+-
+-        # q represents the new token being generated, one per batch
+-        q = torch.randn(B, H_Q, D, dtype=dtype, device="cuda")
+-
+-        # k_buffer and v_buffer represent all previous tokens
+-        k_buffer = torch.randn(total_tokens, H_KV, D, dtype=dtype, device="cuda")
+-        v_buffer = torch.randn(total_tokens, H_KV, D_V, dtype=dtype, device="cuda")
+-
+-        # o will have the same shape as q
+-        o_triton = torch.zeros(B, H_Q, D_V, dtype=dtype, device="cuda")
+-        o = torch.zeros(B, H_Q, D_V, dtype=dtype, device="cuda")
+-
+-        req_to_token = torch.arange(
+-            total_tokens, device="cuda", dtype=torch.int32
+-        ).reshape(B, seq_len)
+-        b_req_idx = torch.arange(B, device="cuda", dtype=torch.int32)
+-        b_seq_len = torch.full((B,), seq_len, device="cuda", dtype=torch.int32)
+-
+-        attn_logits = torch.empty(
+-            (B, H_Q, num_kv_splits, D_V + 1),
+-            dtype=torch.float32,
+-            device="cuda",
+-        )
+-
+-        triton_decode_attention_fwd_grouped(
+-            q,
+-            k_buffer,
+-            v_buffer,
+-            o_triton,
+-            req_to_token,
+-            b_req_idx,
+-            b_seq_len,
+-            attn_logits,
+-            num_kv_splits,
+-            sm_scale,
+-        )
+-
+-        k_buffer = k_buffer.view(B, seq_len, H_KV, D)
+-        v_buffer = v_buffer.view(B, seq_len, H_KV, D_V)
+-        attn_logits = torch.empty(
+-            (num_kv_splits, B, D_V, H_Q),
+-            dtype=torch.float32,
+-            device="cuda",
+-        )
+-
+-        attn_logits_max = torch.empty(
+-            (num_kv_splits, B, H_Q),
+-            dtype=torch.float32,
+-            device="cuda",
+-        )
+-
+-        decode_attention_wave(
+-            q,
+-            k_buffer,
+-            v_buffer,
+-            o,
+-            req_to_token,
+-            b_req_idx,
+-            b_seq_len,
+-            attn_logits,
+-            attn_logits_max,
+-            num_kv_splits,
+-            sm_scale,
+-        )
+-
+-        cos_sim = torch.nn.functional.cosine_similarity(
+-            o.flatten(), o_triton.flatten(), dim=0
+-        )
+-        print(cos_sim.item())
+-        self.assertTrue(cos_sim.item() > 0.99)
+-        self.assertTrue(torch.allclose(o, o_triton, atol=3e-2))
+-
+-    def test_grouped_decode_attention(self):
+-        # seq_lens = [5, 100, 128, 500]
+-        seq_lens = [
+-            100,
+-        ]
+-        configs = [
+-            # (2, 16, 16, 64, 64),
+-            # (2, 16, 1, 64, 64), uncomment this
+-            # (2, 64, 1, 13, 13),
+-            (2, 128, 1, 80, 80),
+-            # (2, 128, 2, 512, 512),
+-            # (2, 128, 1, 576, 512),
+-        ]
+-
+-        for S in seq_lens:
+-            for B, H_Q, H_KV, D, D_V in configs:
+-                self._test_grouped_decode_attention_once(B, S, H_Q, H_KV, D, D_V)
+-
+-    def _test_context_attention_once(self, head_dim, is_causal):
+-        # Set up a simple test case
+-        dtype = torch.float16
+-        num_heads = 4
+-        kv_heads = 1
+-        seq_lens = [128, 256]
+-        max_seq_len = max(seq_lens)
+-
+-        # Create random input tensors
+-        q = torch.randn(sum(seq_lens), num_heads, head_dim, dtype=dtype, device="cuda")
+-        k = torch.randn(sum(seq_lens), kv_heads, head_dim, dtype=dtype, device="cuda")
+-        v = torch.randn(sum(seq_lens), kv_heads, head_dim, dtype=dtype, device="cuda")
+-        o_triton = torch.zeros(
+-            sum(seq_lens), num_heads, head_dim, dtype=dtype, device="cuda"
+-        )
+-        o = torch.zeros(sum(seq_lens), num_heads, head_dim, dtype=dtype, device="cuda")
+-
+-        # Create b_start_loc and b_seq_len tensors
+-        b_start_loc = torch.tensor([0, seq_lens[0]], device="cuda")
+-        b_seq_len = torch.tensor(seq_lens, device="cuda")
+-
+-        context_attention_fwd(
+-            q, k, v, o_triton, b_start_loc, b_seq_len, max_seq_len, is_causal=is_causal
+-        )
+-        prefill_attention_wave(
+-            q, k, v, o, b_start_loc, b_seq_len, max_seq_len, is_causal=is_causal
+-        )
+-        cos_sim = torch.nn.functional.cosine_similarity(
+-            o.flatten(), o_triton.flatten(), dim=0
+-        )
+-
+-        print(cos_sim.item())
+-        self.assertTrue(torch.allclose(o, o_triton, atol=3e-2))
+-        self.assertTrue(cos_sim.item() > 1 - (1e-5))
+-
+-    def test_context_attention(self):
+-        # head_dim = [128, 96, 80, 13]
+-        # for is_causal in [False, True]:
+-
+-        head_dim = [128]
+-
+-        for dim in head_dim:
+-            for is_causal in [False]:
+-                self._test_context_attention_once(dim, is_causal)
+-
+-
+-if __name__ == "__main__":
+-    unittest.main()
