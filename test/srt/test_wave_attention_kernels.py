@@ -194,12 +194,12 @@ class TestWaveAttention(unittest.TestCase):
         b_req_idx[1 : B + 1] = torch.cumsum(b_seq_len, dim=0)
 
         attn_logits = torch.empty(
-            (B, H_Q, num_kv_splits, D_V + 1),
+            (B, H_Q, max_kv_splits, D_V + 1),
             dtype=torch.float32,
             device="cuda",
         )
         attn_lse = torch.empty(
-            (B, H_Q, num_kv_splits),
+            (B, H_Q, max_kv_splits),
             dtype=torch.float32,
             device="cuda",
         )
