@@ -745,22 +745,6 @@ def decode_attention_fwd(
     k_buffer,
     v_buffer,
     o,
-    kv_indptr,
-    kv_indices,
-    attn_logits,
-    attn_lse,
-    num_kv_splits,
-    max_kv_splits,
-    sm_scale,
-    logit_cap=0.0,
-):
-    pass
-
-def decode_attention_fwd(
-    q,
-    k_buffer,
-    v_buffer,
-    o,
     b_req_idx,
     req_to_token,
     attn_logits,
@@ -770,7 +754,7 @@ def decode_attention_fwd(
     sm_scale,
     logit_cap=0.0,
 ):
-    assert num_kv_splits == attn_logits.shape[2]
+    assert max_kv_splits == attn_logits.shape[2]
     kv_group_num = q.shape[1] // v_buffer.shape[1]
 
     if kv_group_num == 1:
@@ -784,7 +768,7 @@ def decode_attention_fwd(
             b_req_idx,
             attn_logits,
             attn_logits_max,
-            num_kv_splits,
+            max_kv_splits,
             sm_scale,
             logit_cap,
             mha=True,
@@ -800,7 +784,7 @@ def decode_attention_fwd(
             b_req_idx,
             attn_logits,
             attn_logits_max,
-            num_kv_splits,
+            max_kv_splits,
             sm_scale,
             logit_cap,
             mha=False,

@@ -174,7 +174,8 @@ class TestWaveAttention(unittest.TestCase):
         seq_len = S  # This represents the number of tokens already in the sequence
         total_tokens = B * seq_len
         sm_scale = 1.0 / (D**0.5)
-        num_kv_splits = 8
+        max_kv_splits = 8
+        num_kv_splits = torch.full((B,), 4, dtype=torch.int32, device="cuda")
 
         # q represents the new token being generated, one per batch
         q = torch.randn(B, H_Q, D, dtype=dtype, device="cuda")
@@ -213,20 +214,20 @@ class TestWaveAttention(unittest.TestCase):
             attn_logits,
             attn_lse,
             num_kv_splits,
-            num_kv_splits,
+            max_kv_splits,
             sm_scale,
         )
 
         k_buffer = k_buffer.view(B, seq_len, H_KV, D)
         v_buffer = v_buffer.view(B, seq_len, H_KV, D_V)
         attn_logits = torch.empty(
-            (num_kv_splits, B, D_V, H_Q),
+            (max_kv_splits, B, D_V, H_Q),
             dtype=torch.float32,
             device="cuda",
         )
 
         attn_logits_max = torch.empty(
-            (num_kv_splits, B, H_Q),
+            (max_kv_splits, B, H_Q),
             dtype=torch.float32,
             device="cuda",
         )
@@ -241,7 +242,7 @@ class TestWaveAttention(unittest.TestCase):
             attn_logits,
             attn_logits_max,
             num_kv_splits,
-            num_kv_splits,
+            max_kv_splits,
             sm_scale,
         )
 
