@@ -653,11 +653,11 @@ def decode_attention_wave(
     attn_logits,
     attn_logits_max,
     num_kv_splits,
+    max_kv_splits,
     sm_scale,
     logit_cap=0.0,
-    mha=False,
 ):
-
+    mha = (q.shape[1] // v_buffer.shape[1]) == 1
     num_seqs, num_query_heads, head_size = q.shape
     _, _, num_kv_heads, _ = k_buffer.shape
     _, _, _, head_size_kv = v_buffer.shape
@@ -689,7 +689,7 @@ def decode_attention_wave(
     ) = get_paged_decode_attention_kernels(
         shape,
         mfma_variant,
-        num_kv_splits,
+        max_kv_splits,
         k_buffer.shape,
         v_buffer.shape,
         req_to_token.shape,
@@ -768,10 +768,10 @@ def decode_attention_fwd(
             b_req_idx,
             attn_logits,
             attn_logits_max,
+            num_kv_splits,
             max_kv_splits,
             sm_scale,
             logit_cap,
-            mha=True,
         )
     else:
         # GQA/MQA/MLA
@@ -784,8 +784,8 @@ def decode_attention_fwd(
             b_req_idx,
             attn_logits,
             attn_logits_max,
+            num_kv_splits,
             max_kv_splits,
             sm_scale,
             logit_cap,
-            mha=False,
         )
