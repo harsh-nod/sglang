@@ -29,7 +29,7 @@ from iree.turbine.kernel.wave.utils.general_utils import (
 from iree.turbine.kernel.wave.utils.run_utils import (
     set_default_run_config,
 )
-from iree.turbine.kernel.wave.constraints import MMAType
+from iree.turbine.kernel.wave.constraints import MMAType, GenericDot, MMAOperand
 from iree.turbine.kernel.wave.templates.paged_decode_attention import (
     get_paged_decode_attention_kernels,
     paged_decode_attention_shape,
@@ -650,12 +650,12 @@ def decode_attention_wave(
     o,
     req_to_token,
     b_req_idx,
-    b_seq_len,
     attn_logits,
     attn_logits_max,
     num_kv_splits,
     sm_scale,
     logit_cap=0.0,
+    mha=False,
 ):
 
     num_seqs, num_query_heads, head_size = q.shape
@@ -673,7 +673,14 @@ def decode_attention_wave(
     )
 
     # Get the kernels (either compile or load from cache).
-    mfma_variant = (MMAType.F32_16x16x16_F16, MMAType.F32_16x16x16_F16)
+    if mha:
+        mfma_variant = (
+            GenericDot(along_dim=MMAOperand.M, k_vec_size=4, k_mult=1),
+            GenericDot(along_dim=MMAOperand.M, k_vec_size=1, k_mult=64),
+        )
+    else:
+        mfma_variant = (MMAType.F32_16x16x16_F16, MMAType.F32_16x16x16_F16)
+
     (
         phase_0,
         phase_1,
@@ -686,6 +693,7 @@ def decode_attention_wave(
         k_buffer.shape,
         v_buffer.shape,
         req_to_token.shape,
+        mha,
     )
     hyperparams_0.update(get_default_scheduling_params())
     hyperparams_1.update(get_default_scheduling_params())
@@ -707,7 +715,6 @@ def decode_attention_wave(
         k_buffer,
         v_buffer,
         b_req_idx,
-        b_seq_len,
         req_to_token,
         attn_logits,
         attn_logits_max,
@@ -726,12 +733,11 @@ def decode_attention_wave(
     options = set_default_run_config(options)
     phase_1 = wave_compile(options, phase_1)
 
-    mb_sv = phase_1(attn_logits, attn_logits_max, b_seq_len, o)
+    mb_sv = phase_1(attn_logits, attn_logits_max, b_req_idx, o)
     if dump_generated_mlir:
         filename = f"wave_decode_attention_phase1_{'x'.join(map(str, shape))}.mlir"
         with open(filename, "w") as f:
             f.write(mb_sv.module_op.get_asm())
-
 
 
 def decode_attention_fwd(
@@ -739,12 +745,28 @@ def decode_attention_fwd(
     k_buffer,
     v_buffer,
     o,
-    req_to_token,
+    kv_indptr,
+    kv_indices,
+    attn_logits,
+    attn_lse,
+    num_kv_splits,
+    max_kv_splits,
+    sm_scale,
+    logit_cap=0.0,
+):
+    pass
+
+def decode_attention_fwd(
+    q,
+    k_buffer,
+    v_buffer,
+    o,
     b_req_idx,
-    b_seq_len,
+    req_to_token,
     attn_logits,
     attn_logits_max,
     num_kv_splits,
+    max_kv_splits,
     sm_scale,
     logit_cap=0.0,
 ):
@@ -753,18 +775,19 @@ def decode_attention_fwd(
 
     if kv_group_num == 1:
         # MHA
-        decode_attention_fwd_normal(
+        decode_attention_wave(
             q,
             k_buffer,
             v_buffer,
             o,
             req_to_token,
             b_req_idx,
-            b_seq_len,
             attn_logits,
+            attn_logits_max,
             num_kv_splits,
             sm_scale,
             logit_cap,
+            mha=True,
         )
     else:
         # GQA/MQA/MLA
@@ -775,10 +798,10 @@ def decode_attention_fwd(
             o,
             req_to_token,
             b_req_idx,
-            b_seq_len,
             attn_logits,
             attn_logits_max,
             num_kv_splits,
             sm_scale,
             logit_cap,
+            mha=False,
         )

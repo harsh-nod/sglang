@@ -187,14 +187,18 @@ class TestWaveAttention(unittest.TestCase):
         o_triton = torch.zeros(B, H_Q, D_V, dtype=dtype, device="cuda")
         o = torch.zeros(B, H_Q, D_V, dtype=dtype, device="cuda")
 
-        req_to_token = torch.arange(
-            total_tokens, device="cuda", dtype=torch.int32
-        ).reshape(B, seq_len)
-        b_req_idx = torch.arange(B, device="cuda", dtype=torch.int32)
+        req_to_token = torch.arange(total_tokens, device="cuda", dtype=torch.int32)
+        b_req_idx = torch.zeros(B + 1, device="cuda", dtype=torch.int32)
         b_seq_len = torch.full((B,), seq_len, device="cuda", dtype=torch.int32)
+        b_req_idx[1 : B + 1] = torch.cumsum(b_seq_len, dim=0)
 
         attn_logits = torch.empty(
             (B, H_Q, num_kv_splits, D_V + 1),
+            dtype=torch.float32,
+            device="cuda",
+        )
+        attn_lse = torch.empty(
+            (B, H_Q, num_kv_splits),
             dtype=torch.float32,
             device="cuda",
         )
@@ -204,10 +208,11 @@ class TestWaveAttention(unittest.TestCase):
             k_buffer,
             v_buffer,
             o_triton,
-            req_to_token,
             b_req_idx,
-            b_seq_len,
+            req_to_token,
             attn_logits,
+            attn_lse,
+            num_kv_splits,
             num_kv_splits,
             sm_scale,
         )
@@ -231,11 +236,11 @@ class TestWaveAttention(unittest.TestCase):
             k_buffer,
             v_buffer,
             o,
-            req_to_token,
             b_req_idx,
-            b_seq_len,
+            req_to_token,
             attn_logits,
             attn_logits_max,
+            num_kv_splits,
             num_kv_splits,
             sm_scale,
         )
