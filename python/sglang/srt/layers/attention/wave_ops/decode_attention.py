@@ -657,7 +657,7 @@ def decode_attention_wave(
     sm_scale,
     logit_cap=0.0,
 ):
-    mha = (q.shape[1] // v_buffer.shape[1]) == 1
+    mha = (q.shape[1] // v_buffer.shape[2]) == 1
     num_seqs, num_query_heads, head_size = q.shape
     _, _, num_kv_heads, _ = k_buffer.shape
     _, _, _, head_size_kv = v_buffer.shape
@@ -755,7 +755,7 @@ def decode_attention_fwd(
     logit_cap=0.0,
 ):
     assert max_kv_splits == attn_logits.shape[2]
-    kv_group_num = q.shape[1] // v_buffer.shape[1]
+    kv_group_num = q.shape[1] // v_buffer.shape[2]
 
     if kv_group_num == 1:
         # MHA
