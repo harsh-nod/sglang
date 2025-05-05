@@ -656,6 +656,7 @@ def decode_attention_wave(
     max_kv_splits,
     sm_scale,
     logit_cap=0.0,
+    mha=False,
 ):
     mha = (q.shape[1] // v_buffer.shape[2]) == 1
     num_seqs, num_query_heads, head_size = q.shape
@@ -777,6 +778,7 @@ def decode_attention_fwd(
             max_kv_splits,
             sm_scale,
             logit_cap,
+            mha=True,
         )
     else:
         # GQA/MQA/MLA
@@ -793,4 +795,5 @@ def decode_attention_fwd(
             max_kv_splits,
             sm_scale,
             logit_cap,
+            mha=False,
         )
