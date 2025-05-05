@@ -705,6 +705,8 @@ def decode_attention_wave(
         subs=hyperparams_0,
         canonicalize=True,
         run_bench=False,
+        use_buffer_load_ops=False,
+        use_buffer_store_ops=False,
     )
     options = set_default_run_config(options)
     phase_0 = wave_compile(options, phase_0)
@@ -729,6 +731,8 @@ def decode_attention_wave(
         subs=hyperparams_1,
         canonicalize=True,
         run_bench=False,
+        use_buffer_load_ops=False,
+        use_buffer_store_ops=False,
     )
     options = set_default_run_config(options)
     phase_1 = wave_compile(options, phase_1)
