@@ -203,11 +203,6 @@ class TestWaveAttention(unittest.TestCase):
             dtype=torch.float32,
             device="cuda",
         )
-        attn_lse = torch.empty(
-            (B, H_Q, num_kv_splits),
-            dtype=torch.float32,
-            device="cuda",
-        )
 
         triton_decode_attention_fwd_grouped(
             q,
