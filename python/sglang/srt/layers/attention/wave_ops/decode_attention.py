@@ -657,7 +657,7 @@ def decode_attention_wave(
     sm_scale,
     logit_cap=0.0,
 ):
-    mha = (q.shape[1] // v_buffer.shape[2]) == 1
+    mha = (q.shape[1] // v_buffer.shape[1]) == 1
     num_seqs, num_query_heads, head_size = q.shape
     total_tokens, num_kv_heads, _ = k_buffer.shape
     _, _, head_size_kv = v_buffer.shape
@@ -670,7 +670,7 @@ def decode_attention_wave(
         head_size_kv,
         block_size,
         num_seqs,
-        k_buffer.shape[1],
+        seq_len,
     )
 
     k_buffer = k_buffer.view(num_seqs, seq_len, num_kv_heads, head_size)
@@ -764,37 +764,17 @@ def decode_attention_fwd(
     logit_cap=0.0,
 ):
     assert max_kv_splits == attn_logits.shape[2]
-    kv_group_num = q.shape[1] // v_buffer.shape[2]
-
-    if kv_group_num == 1:
-        # MHA
-        decode_attention_wave(
-            q,
-            k_buffer,
-            v_buffer,
-            o,
-            req_to_token,
-            b_req_idx,
-            attn_logits,
-            attn_logits_max,
-            num_kv_splits,
-            max_kv_splits,
-            sm_scale,
-            logit_cap,
-        )
-    else:
-        # GQA/MQA/MLA
-        decode_attention_wave(
-            q,
-            k_buffer,
-            v_buffer,
-            o,
-            req_to_token,
-            b_req_idx,
-            attn_logits,
-            attn_logits_max,
-            num_kv_splits,
-            max_kv_splits,
-            sm_scale,
-            logit_cap,
-        )
+    decode_attention_wave(
+        q,
+        k_buffer,
+        v_buffer,
+        o,
+        req_to_token,
+        b_req_idx,
+        attn_logits,
+        attn_logits_max,
+        num_kv_splits,
+        max_kv_splits,
+        sm_scale,
+        logit_cap,
+    )
