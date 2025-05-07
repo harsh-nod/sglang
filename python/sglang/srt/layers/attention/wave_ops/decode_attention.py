@@ -659,8 +659,9 @@ def decode_attention_wave(
 ):
     mha = (q.shape[1] // v_buffer.shape[2]) == 1
     num_seqs, num_query_heads, head_size = q.shape
-    _, _, num_kv_heads, _ = k_buffer.shape
-    _, _, _, head_size_kv = v_buffer.shape
+    total_tokens, num_kv_heads, _ = k_buffer.shape
+    _, _, head_size_kv = v_buffer.shape
+    seq_len = total_tokens // num_seqs
     block_size = 32
     shape = paged_decode_attention_shape(
         num_query_heads,
@@ -671,6 +672,9 @@ def decode_attention_wave(
         num_seqs,
         k_buffer.shape[1],
     )
+
+    k_buffer = k_buffer.view(num_seqs, seq_len, num_kv_heads, head_size)
+    v_buffer = v_buffer.view(num_seqs, seq_len, num_kv_heads, head_size_kv)
 
     # Get the kernels (either compile or load from cache).
     if mha:
