@@ -88,7 +88,7 @@ class WaveAttnBackend(AttentionBackend):
     def __init__(
         self,
         model_runner: ModelRunner,
-        skip_prefill: bool,
+        skip_prefill: bool = False,
         kv_indptr_buf: Optional[torch.Tensor] = None,
     ):
         # Lazy import to avoid the initialization of cuda context
