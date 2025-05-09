@@ -7,7 +7,7 @@ import torch
 import triton
 import triton.language as tl
 
-from sglang.srt.layers.attention import AttentionBackend
+from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
 from sglang.srt.layers.attention.utils import create_flashinfer_kv_indices_triton
 from sglang.srt.layers.dp_attention import get_attention_tp_size
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
