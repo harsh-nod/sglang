@@ -332,7 +332,7 @@ class WaveAttnBackend(AttentionBackend):
             device=self.device,
         )
         self.cuda_graph_attn_lse = torch.zeros(
-            (self.max_kv_splits, max_bs, self.num_head)
+            (self.max_kv_splits, max_bs, self.num_head),
             # (max_bs, self.num_head, self.max_kv_splits),
             dtype=torch.float32,
             device=self.device,
