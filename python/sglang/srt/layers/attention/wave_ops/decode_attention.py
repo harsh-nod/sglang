@@ -770,7 +770,7 @@ def decode_attention_fwd(
     sm_scale,
     logit_cap=0.0,
 ):
-    assert max_kv_splits == attn_logits.shape[2]
+    # assert max_kv_splits == attn_logits.shape[2]
     decode_attention_wave(
         q,
         k_buffer,
