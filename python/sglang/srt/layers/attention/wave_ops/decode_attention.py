@@ -648,8 +648,8 @@ def decode_attention_fwd_grouped(
 @functools.lru_cache
 def get_wave_kernel(
     shape: paged_decode_attention_shape,
-    max_kv_splits: int,
-    input_dtype: torch.dtype,
+    max_kv_splits,
+    input_dtype,
 ):
     mha = (shape.num_query_heads // shape.num_kv_heads) == 1
 
