@@ -729,7 +729,6 @@ def decode_attention_wave(
     sm_scale,
     logit_cap=0.0,
 ):
-    mha = (q.shape[1] // v_buffer.shape[1]) == 1
     num_seqs, num_query_heads, head_size = q.shape
     _, num_kv_heads, _ = k_buffer.shape
     _, _, head_size_kv = v_buffer.shape
