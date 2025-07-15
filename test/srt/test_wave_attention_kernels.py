@@ -23,6 +23,7 @@ from sglang.srt.layers.attention.triton_ops.extend_attention import (
     redundant_attention,
     extend_attention_fwd,
 )
+from typing import List, Optional
 
 
 class TestWaveAttention(unittest.TestCase):
@@ -173,6 +174,64 @@ class TestWaveAttention(unittest.TestCase):
         for value in attention_values:
             self._test_extend_attention_once(32, 16384, 6, 1, value)
 
+    def torch_ref_paged_attn(
+        self,
+        query: torch.Tensor,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        query_lens: List[int],
+        request_indices: List[int],
+        block_tables: torch.Tensor,
+        scale: float,
+        causal: Optional[bool] = False,
+        sliding_window: Optional[int] = None,
+        soft_cap: Optional[float] = None,
+    ) -> torch.Tensor:
+        num_seqs = len(query_lens)
+        block_tables = block_tables.cpu().numpy()
+        _, num_kv_heads, head_size = key_cache.shape
+
+        outputs: List[torch.Tensor] = []
+        start_idx = 0
+        for i in range(num_seqs):
+            query_len = query_lens[i]
+            kv_start_idx = request_indices[i]
+            kv_len = request_indices[i + 1] - kv_start_idx
+            q = query[start_idx : start_idx + query_len]
+            q *= scale
+
+            block_indices = block_tables[kv_start_idx : kv_start_idx + kv_len]
+
+            k = key_cache[block_indices].view(-1, num_kv_heads, head_size)
+            v = value_cache[block_indices].view(-1, num_kv_heads, head_size)
+
+            if q.shape[1] != k.shape[1]:
+                k = torch.repeat_interleave(k, q.shape[1] // k.shape[1], dim=1)
+                v = torch.repeat_interleave(v, q.shape[1] // v.shape[1], dim=1)
+            attn = torch.einsum("qhd,khd->hqk", q, k).float()
+            empty_mask = torch.ones(query_len, kv_len)
+            mask = torch.triu(empty_mask, diagonal=kv_len - query_len + 1).bool()
+            if sliding_window is not None:
+                sliding_window_mask = (
+                    torch.triu(
+                        empty_mask, diagonal=kv_len - (query_len + sliding_window) + 1
+                    )
+                    .bool()
+                    .logical_not()
+                )
+                mask |= sliding_window_mask
+            if soft_cap is not None:
+                attn = soft_cap * torch.tanh(attn / soft_cap)
+            if causal:
+                attn.masked_fill_(mask, float("-inf"))
+            attn = torch.softmax(attn, dim=-1).to(v.dtype)
+            out = torch.einsum("hqk,khd->qhd", attn, v)
+
+            outputs.append(out)
+            start_idx += query_len
+
+        return torch.cat(outputs, dim=0)
+
     def _test_grouped_decode_attention_once(self, B, S, H_Q, H_KV, D, D_V):
         dtype = torch.float16
         seq_len = S  # This represents the number of tokens already in the sequence
@@ -253,26 +312,35 @@ class TestWaveAttention(unittest.TestCase):
             logit_cap,
         )
 
+        out_torch_ref = self.torch_ref_paged_attn(
+            query=q,
+            key_cache=k_buffer,
+            value_cache=v_buffer,
+            query_lens=torch.ones(B, dtype=torch.int32),
+            request_indices=b_req_idx,
+            block_tables=req_to_token,
+            scale=sm_scale,
+            soft_cap=logit_cap,
+        )
+
         cos_sim = torch.nn.functional.cosine_similarity(
-            o.flatten(), o_triton.flatten(), dim=0
+            o.flatten(), out_torch_ref.flatten(), dim=0
         )
         print(cos_sim.item())
         self.assertTrue(cos_sim.item() > 0.99)
-        self.assertTrue(torch.allclose(o, o_triton, atol=3e-2))
+        self.assertTrue(torch.allclose(o, out_torch_ref, atol=3e-2))
+    
 
     def test_grouped_decode_attention(self):
-        # seq_lens = [5, 100, 128, 500]
-        seq_lens = [
-            100,
-        ]
+        seq_lens = [5, 100, 128, 500]
         configs = [
-            # (2, 16, 16, 64, 64),
-            # (2, 16, 1, 64, 64), uncomment this
-            # (2, 64, 1, 13, 13),
-            # (2, 128, 1, 80, 80),
+            (2, 16, 16, 64, 64),
+            (2, 16, 1, 64, 64),
+            (2, 64, 1, 13, 13),
+            (2, 128, 1, 80, 80),
             (32, 128, 2, 512, 512),
-            # (2, 128, 2, 512, 512),
-            # (2, 128, 1, 576, 512),
+            (2, 128, 2, 512, 512),
+            (2, 128, 1, 576, 512),
         ]
 
         for S in seq_lens:
