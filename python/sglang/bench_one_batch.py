@@ -55,6 +55,7 @@ from typing import Tuple
 import numpy as np
 import torch
 import torch.distributed as dist
+from rpdTracerControl import rpdTracerControl
 
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.distributed.parallel_state import destroy_distributed_environment
@@ -76,7 +77,7 @@ from sglang.srt.utils import (
     set_gpu_proc_affinity,
     suppress_other_loggers,
 )
-from rpdTracerControl import rpdTracerControl
+
 
 @dataclasses.dataclass
 class BenchArgs:
@@ -128,13 +129,13 @@ class BenchArgs:
             '"[profile_filename_prefix]_batch[batch_size]_input[input_len]_output[output_len].trace.json.gz"',
         )
         parser.add_argument(
-            "--enable-decode-prof",
-            action='store_true',
-            help="enable decode profiler.")
+            "--enable-decode-prof", action="store_true", help="enable decode profiler."
+        )
         parser.add_argument(
             "--enable-prefill-prof",
-            action='store_true',
-            help="enable prefill profiler.")
+            action="store_true",
+            help="enable prefill profiler.",
+        )
 
     @classmethod
     def from_cli_args(cls, args: argparse.Namespace):
@@ -341,7 +342,10 @@ def synchronize(device):
 
 
 def latency_test_run_once(
-    is_warm_up, enable_prefill_prof, enable_decode_prof, tp_rank,
+    is_warm_up,
+    enable_prefill_prof,
+    enable_decode_prof,
+    tp_rank,
     run_name,
     model_runner,
     rank_print,
@@ -538,7 +542,7 @@ def main(server_args, bench_args):
     server_args.cuda_graph_max_bs = max(bench_args.batch_size)
     if bench_args.enable_prefill_prof or bench_args.enable_decode_prof:
         # Optionally call this class method before creating first instance
-        rpdTracerControl.setFilename(name = "trace.rpd", append=False)
+        rpdTracerControl.setFilename(name="trace.rpd", append=False)
 
         # Create first instance (this loads the profiler and creates the file)
         profile = rpdTracerControl()

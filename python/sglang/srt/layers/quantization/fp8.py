@@ -98,12 +98,8 @@ _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
 if _is_hip and (_use_aiter or _use_hip_int4):
     from aiter import ActivationType, QuantType
     from aiter.fused_moe import fused_moe
+    from aiter.fused_moe_bf16_asm import asm_moe, ck_moe_2stages, ck_moe_2stages_win4
     from aiter.ops.shuffle import shuffle_weight
-    from aiter import ActivationType
-    from aiter.fused_moe_bf16_asm import (
-        ck_moe_2stages_win4,
-        ck_moe_2stages,
-    )
 
 if not (_is_cuda or _is_npu or (_is_cpu and _is_cpu_amx_available) or _is_hip):
     from vllm._custom_ops import scaled_fp8_quant
@@ -270,7 +266,7 @@ class Fp8LinearMethod(LinearMethodBase):
                         f"{input_size_per_partition} is not divisible by "
                         f"weight quantization block_k = {block_k}."
                     )
-            # Required by collum parallel or enabling merged weights
+            # Required by column parallel or enabling merged weights
             if (
                 tp_size > 1 and output_size // output_size_per_partition == tp_size
             ) or len(output_partition_sizes) > 1:
@@ -557,7 +553,7 @@ class Fp8MoEMethod(FusedMoEMethodBase):
                 self.quant_config.weight_block_size[1],
             )
             # NOTE(HandH1998): To ensure proper alignment of the block-wise quantization scales, the output_size of the weights for both the gate and up layers must be divisible by block_n.
-            # Required by collum parallel or enabling merged weights
+            # Required by column parallel or enabling merged weights
             if intermediate_size % block_n != 0:
                 raise ValueError(
                     f"The output_size of gate's and up's weight = "
@@ -946,13 +942,13 @@ class Fp8MoEMethod(FusedMoEMethodBase):
         # Weight Permutation
         layer.w13_weight = torch.nn.Parameter(
             permute_weight(layer.w13_weight.data),
-            #shuffle_weight(layer.w13_weight.data, (16, 16)),
+            # shuffle_weight(layer.w13_weight.data, (16, 16)),
             requires_grad=False,
         )
         torch.cuda.empty_cache()
         layer.w2_weight = torch.nn.Parameter(
             permute_weight(layer.w2_weight.data),
-            #shuffle_weight(layer.w2_weight.data, (16, 16)),
+            # shuffle_weight(layer.w2_weight.data, (16, 16)),
             requires_grad=False,
         )
         torch.cuda.empty_cache()
@@ -993,13 +989,13 @@ class Fp8MoEMethod(FusedMoEMethodBase):
         if _use_aiter:
             layer.w13_weight = torch.nn.Parameter(
                 permute_weight(layer.w13_weight.data),
-                #shuffle_weight(layer.w13_weight.data, (16, 16)),
+                # shuffle_weight(layer.w13_weight.data, (16, 16)),
                 requires_grad=False,
             )
             torch.cuda.empty_cache()
             layer.w2_weight = torch.nn.Parameter(
                 permute_weight(layer.w2_weight.data),
-                #shuffle_weight(layer.w2_weight.data, (16, 16)),
+                # shuffle_weight(layer.w2_weight.data, (16, 16)),
                 requires_grad=False,
             )
             torch.cuda.empty_cache()
@@ -1175,7 +1171,9 @@ class Fp8MoEMethod(FusedMoEMethodBase):
                 topk_ids,
                 w1_scale=layer.w13_weight_scale1,
                 w2_scale=layer.w2_weight_scale1,
-                activation=ActivationType.Silu if activation == "silu" else ActivationType.Gelu
+                activation=(
+                    ActivationType.Silu if activation == "silu" else ActivationType.Gelu
+                ),
             )
 
         if _use_aiter:
@@ -1207,7 +1205,11 @@ class Fp8MoEMethod(FusedMoEMethodBase):
                     topk_ids,
                     w1_scale=layer.w13_weight_scale1,
                     w2_scale=layer.w2_weight_scale1,
-                    activation=ActivationType.Silu if activation=="silu" else ActivationType.Gelu,
+                    activation=(
+                        ActivationType.Silu
+                        if activation == "silu"
+                        else ActivationType.Gelu
+                    ),
                 )
         else:
             # Expert fusion with FP8 quantization
