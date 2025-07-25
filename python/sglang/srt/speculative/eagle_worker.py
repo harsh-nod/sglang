@@ -90,6 +90,7 @@ class EAGLEWorker(TpModelWorker):
             server_args.speculative_algorithm
         )
         self.padded_static_len = -1
+        self.sampling_backend = server_args.sampling_backend
 
         # Override context length with target model's context length
         server_args.context_length = target_worker.model_runner.model_config.context_len
@@ -701,6 +702,10 @@ class EAGLEWorker(TpModelWorker):
 
         if batch.return_logprob:
             self.add_logprob_values(batch, res, logits_output)
+
+        # Check if the sampling backend is wave
+        if self.sampling_backend == "wave":
+            batch.is_wave_sampling = True
 
         # Prepare the batch for the next draft forwards.
         batch.forward_mode = (
