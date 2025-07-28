@@ -15,17 +15,17 @@
 import functools
 import os
 
-import iree.turbine.kernel as tk
+import wave_lang.kernel as tk
 import torch
 import torch.nn.functional as F
-from iree.turbine.kernel.lang.global_symbols import *
-from iree.turbine.kernel.wave.compile import WaveCompileOptions, wave_compile
-from iree.turbine.kernel.wave.templates.speculative_decoding import (
+from wave_lang.kernel.lang.global_symbols import *
+from wave_lang.kernel.wave.compile import WaveCompileOptions, wave_compile
+from wave_lang.kernel.wave.templates.speculative_decoding import (
     get_speculative_decoding_kernel,
     get_speculative_sampling_kernel,
 )
-from iree.turbine.kernel.wave.utils.general_utils import get_default_scheduling_params
-from iree.turbine.kernel.wave.utils.run_utils import set_default_run_config
+from wave_lang.kernel.wave.utils.general_utils import get_default_scheduling_params
+from wave_lang.kernel.wave.utils.run_utils import set_default_run_config
 
 dump_generated_mlir = int(os.environ.get("WAVE_DUMP_MLIR", 0))
 enable_scheduling_barriers = int(os.environ.get("WAVE_USE_SCHED_BARRIERS", 0))

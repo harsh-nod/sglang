@@ -24,17 +24,17 @@ import functools
 import logging
 import math
 
-import iree.turbine.kernel as tk
-from iree.turbine.kernel.lang.global_symbols import *
-from iree.turbine.kernel.wave.compile import WaveCompileOptions, wave_compile
-from iree.turbine.kernel.wave.constraints import GenericDot, MMAOperand, MMAType
-from iree.turbine.kernel.wave.templates.paged_decode_attention import (
+import wave_lang.kernel as tk
+from wave_lang.kernel.lang.global_symbols import *
+from wave_lang.kernel.wave.compile import WaveCompileOptions, wave_compile
+from wave_lang.kernel.wave.constraints import GenericDot, MMAOperand, MMAType
+from wave_lang.kernel.wave.templates.paged_decode_attention import (
     get_paged_decode_attention_kernels,
     get_paged_decode_intermediate_arrays_shapes,
     paged_decode_attention_shape,
 )
-from iree.turbine.kernel.wave.utils.general_utils import get_default_scheduling_params
-from iree.turbine.kernel.wave.utils.run_utils import set_default_run_config
+from wave_lang.kernel.wave.utils.general_utils import get_default_scheduling_params
+from wave_lang.kernel.wave.utils.run_utils import set_default_run_config
 
 logger = logging.getLogger(__name__)
 import os
