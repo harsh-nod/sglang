@@ -425,6 +425,60 @@ class EagleVerifyInput:
                 retrive_next_sibling=self.retrive_next_sibling,
                 target_predict=target_predict,
             )
+        elif batch.sampling_info.is_wave_sampling:
+            # TODO: replace with wave spec decode in the follow-up PR
+            # apply temperature and get target probs
+            expanded_temperature = torch.repeat_interleave(
+                sampling_info.temperatures, self.draft_token_num, dim=0
+            )  # (bs * draft_token_num, 1)
+
+            target_probs = F.softmax(
+                logits_output.next_token_logits / expanded_temperature, dim=-1
+            )  # (bs * draft_token_num, vocab_size)
+            target_probs = top_k_renorm_prob(
+                target_probs,
+                torch.repeat_interleave(
+                    sampling_info.top_ks, self.draft_token_num, dim=0
+                ),
+            )  # (bs * draft_token_num, vocab_size)
+            target_probs = top_p_renorm_prob(
+                target_probs,
+                torch.repeat_interleave(
+                    sampling_info.top_ps, self.draft_token_num, dim=0
+                ),
+            )
+            target_probs = target_probs.reshape(bs, self.draft_token_num, -1)
+
+            draft_probs = torch.zeros(
+                target_probs.shape, dtype=torch.float32, device="cuda"
+            )
+
+            # coins for rejection sampling
+            coins = torch.rand_like(candidates, dtype=torch.float32, device="cuda")
+            # coins for final sampling
+            coins_for_final_sampling = torch.rand(
+                (bs,), dtype=torch.float32, device="cuda"
+            )
+            tree_speculative_sampling_target_only(
+                predicts=predict,  # mutable
+                accept_index=accept_index,  # mutable
+                accept_token_num=accept_length,  # mutable
+                candidates=candidates,
+                retrive_index=self.retrive_index,
+                retrive_next_token=self.retrive_next_token,
+                retrive_next_sibling=self.retrive_next_sibling,
+                uniform_samples=coins,
+                uniform_samples_for_final_sampling=coins_for_final_sampling,
+                target_probs=target_probs,
+                draft_probs=draft_probs,
+                threshold_single=global_server_args_dict[
+                    "speculative_accept_threshold_single"
+                ],
+                threshold_acc=global_server_args_dict[
+                    "speculative_accept_threshold_acc"
+                ],
+                deterministic=True,
+            )
         else:
             # apply temperature and get target probs
             expanded_temperature = torch.repeat_interleave(

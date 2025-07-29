@@ -1720,6 +1720,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             else:
                 self.sampling_info.grammars = None
 
+        if global_server_args_dict["sampling_backend"] == "wave":
+            self.sampling_info.is_wave_sampling = True
+
         global bid
         bid += 1
         return ModelWorkerBatch(

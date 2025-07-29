@@ -97,7 +97,12 @@ class Sampler(nn.Module):
                             filter_apply_order="joint",
                             check_nan=self.use_nan_detection,
                         )
-                elif global_server_args_dict["sampling_backend"] == "pytorch":
+                elif global_server_args_dict["sampling_backend"] in ["pytorch", "wave"]:
+                    # TODO: We are piggy banking on PyTorch for now. After wave implementation
+                    #  of top_k_top_p_sampling, we will separate it out.
+                    if global_server_args_dict["sampling_backend"] == "wave":
+                        sampling_info.is_wave_sampling = True
+
                     # A slower fallback implementation with torch native operations.
                     batch_next_token_ids = top_k_top_p_min_p_sampling_from_probs_torch(
                         probs,

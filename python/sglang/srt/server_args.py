@@ -1263,7 +1263,7 @@ class ServerArgs:
         parser.add_argument(
             "--sampling-backend",
             type=str,
-            choices=["flashinfer", "pytorch"],
+            choices=["flashinfer", "pytorch", "wave"],
             default=ServerArgs.sampling_backend,
             help="Choose the kernels for sampling layers.",
         )
