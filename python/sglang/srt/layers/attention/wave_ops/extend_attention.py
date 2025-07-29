@@ -23,16 +23,14 @@ import functools
 import math
 import os
 
-import wave_lang.kernel as tk
 import torch
+import wave_lang.kernel as tk
 from wave_lang.kernel.lang.global_symbols import *
 from wave_lang.kernel.wave.compile import WaveCompileOptions, wave_compile
 from wave_lang.kernel.wave.constraints import MMAType
 from wave_lang.kernel.wave.scheduling.schedule import SchedulingType
 from wave_lang.kernel.wave.templates.attention_common import AttentionShape
-from wave_lang.kernel.wave.templates.extend_attention import (
-    get_extend_attention_kernel,
-)
+from wave_lang.kernel.wave.templates.extend_attention import get_extend_attention_kernel
 from wave_lang.kernel.wave.utils.general_utils import get_default_scheduling_params
 from wave_lang.kernel.wave.utils.run_utils import set_default_run_config
 

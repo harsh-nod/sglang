@@ -49,12 +49,10 @@ from sglang.srt.layers.quantization.base_config import (
     QuantizationConfig,
     QuantizeMethodBase,
 )
-
 from sglang.srt.layers.quantization.fp8_kernel import (
     is_fp8_fnuz,
     per_token_group_quant_fp8,
 )
-
 from sglang.srt.layers.quantization.fp8_utils import (
     apply_fp8_linear,
     cutlass_fp8_supported,

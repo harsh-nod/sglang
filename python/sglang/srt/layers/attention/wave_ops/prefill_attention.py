@@ -22,8 +22,8 @@ It supporst page size = 1.
 import math
 import os
 
-import wave_lang.kernel as tk
 import torch
+import wave_lang.kernel as tk
 from wave_lang.kernel.lang.global_symbols import *
 from wave_lang.kernel.wave.compile import WaveCompileOptions, wave_compile
 from wave_lang.kernel.wave.constraints import MMAType
