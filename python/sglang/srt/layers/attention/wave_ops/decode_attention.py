@@ -33,7 +33,6 @@ from wave_lang.kernel.wave.templates.paged_decode_attention import (
     get_paged_decode_intermediate_arrays_shapes,
     paged_decode_attention_shape,
 )
-
 from wave_lang.kernel.wave.utils.general_utils import get_default_scheduling_params
 from wave_lang.kernel.wave.utils.run_utils import set_default_run_config
 
