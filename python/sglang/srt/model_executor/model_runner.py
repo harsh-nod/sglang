@@ -1407,7 +1407,6 @@ class ModelRunner:
 
             return WaveAttnBackend(self)
         elif backend_str == "torch_native":
-
             from sglang.srt.layers.attention.torch_native_backend import (
                 TorchNativeAttnBackend,
             )
