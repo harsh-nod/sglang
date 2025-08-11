@@ -46,7 +46,9 @@ if _is_cuda:
 elif _is_cpu and _is_cpu_amx_available:
     pass
 elif _is_hip:
-    from vllm import _custom_ops as vllm_ops  # gelu_and_mul, silu_and_mul
+    # from vllm import _custom_ops as vllm_ops  # gelu_and_mul, silu_and_mul
+    import aiter.ops.activation as vllm_ops  # gelu_and_mul, silu_and_mul
+    # import sgl_kernel as vllm_ops
 
     if _use_aiter:
         try:

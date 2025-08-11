@@ -25,8 +25,8 @@ _is_hip = is_hip()
 _is_cpu_amx_available = cpu_has_amx_support()
 _is_cpu = is_cpu()
 
-if _is_hip:
-    from aiter import ck_moe
+# if _is_hip:
+    # from aiter import ck_moe
 
 logger = logging.getLogger(__name__)
 
