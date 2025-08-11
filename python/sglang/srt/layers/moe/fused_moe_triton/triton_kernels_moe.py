@@ -5,21 +5,22 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 import torch
-from sgl_kernel import gelu_and_mul, silu_and_mul
+# from sgl_kernel import gelu_and_mul, silu_and_mul
+from aiter.ops.activation import gelu_and_mul, silu_and_mul
 from triton_kernels.matmul_ogs import matmul_ogs
 from triton_kernels.routing import GatherIndx, RoutingData, ScatterIndx
 
 from sglang.srt.utils import direct_register_custom_op
 
-if TYPE_CHECKING:
-    from sglang.srt.layers.moe.topk import TopKOutput
+# if TYPE_CHECKING:
+from sglang.srt.layers.moe.topk import TopKOutput
 
 
 def triton_kernel_moe_forward(
     hidden_states: torch.Tensor,
     w1: torch.Tensor,
     w2: torch.Tensor,
-    topk_output: TopKOutput,
+    topk_output: list[torch.Tensor],
     inplace: bool = False,
     activation: str = "silu",
     apply_router_weight_on_input: bool = False,
@@ -32,9 +33,10 @@ def triton_kernel_moe_forward(
     a1_scale: Optional[torch.Tensor] = None,
     a2_scale: Optional[torch.Tensor] = None,
     block_shape: Optional[list[int]] = None,
+    renormalize: Optional[bool] = False,
 ) -> torch.Tensor:
 
-    assert topk_output.format.is_triton_kernel()
+    # assert topk_output.format.is_triton_kernel()
     routing_data, gather_idx, scatter_idx = topk_output
 
     return triton_kernel_fused_experts(
