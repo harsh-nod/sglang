@@ -33,9 +33,6 @@ def get_wave_kernel(
 ):
     mha = (shape.num_query_heads // shape.num_kv_heads) == 1
 
-    k_buffer = view_trunc(k_buffer, (num_seqs, seq_len, num_kv_heads, head_size))
-    v_buffer = view_trunc(v_buffer, (num_seqs, seq_len, num_kv_heads, head_size_kv))
-
     # Get the kernels (either compile or load from cache).
     if mha:
         mfma_variant = (
