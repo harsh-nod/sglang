@@ -3,16 +3,15 @@ import unittest
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
+from wave_lang.kernel.lang import DataType
 
-from sglang.srt.layers.moe.wave_ops.fused_moe import (
-    moe_split_w1_wave,
-)
+from sglang.srt.layers.moe.wave_ops.fused_moe import moe_split_w1_wave
 from sglang.srt.utils import is_hip
 from sglang.test.test_utils import CustomTestCase
-from wave_lang.kernel.lang import DataType
 
 _is_hip = is_hip()
 dtypes = [torch.float16, torch.bfloat16]
+
 
 class TestWaveFusedMOE(CustomTestCase):
     NUM_EXPERTS = [8, 64]
@@ -41,7 +40,9 @@ class TestWaveFusedMOE(CustomTestCase):
     def torch_moe_split_w1(self, a, w1_gate, w1_up, w2, score, topk):
         m, k = a.shape
         a = a.view(m, -1, k).repeat(1, topk, 1).reshape(-1, k)  # [m * topk, k]
-        out = torch.zeros(m * topk, w2.shape[1], dtype=a.dtype, device=a.device)  # [m * topk, k]
+        out = torch.zeros(
+            m * topk, w2.shape[1], dtype=a.dtype, device=a.device
+        )  # [m * topk, k]
         score = torch.softmax(score, dim=-1, dtype=torch.float32)  # [m, e]
         topk_weight, topk_ids = torch.topk(score, topk)
         topk_weight = topk_weight.view(-1)  # [m * topk]
@@ -52,7 +53,7 @@ class TestWaveFusedMOE(CustomTestCase):
             )  # num_selected (which of the m * topk tokens selected this expert)
             if mask.sum():
                 # Split into gate and up projections
-                gate = a[mask] @ w1_gate[i].transpose(0, 1) # [num_selected, n]
+                gate = a[mask] @ w1_gate[i].transpose(0, 1)  # [num_selected, n]
                 up = a[mask] @ w1_up[i].transpose(0, 1)  # [num_selected, n]
                 lhs = torch.zeros(m, w2.shape[-1], dtype=a.dtype, device=a.device)
                 lhs = F.silu(gate) * up

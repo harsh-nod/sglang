@@ -15,20 +15,17 @@
 import functools
 import os
 
-import wave_lang.kernel as tk
-import wave_lang.kernel.lang as tkl
 import torch
 import torch.nn.functional as F
+import wave_lang.kernel as tk
+import wave_lang.kernel.lang as tkl
+from wave_lang.kernel.lang import DataType
 from wave_lang.kernel.lang.global_symbols import *
 from wave_lang.kernel.wave.compile import WaveCompileOptions, wave_compile
-from wave_lang.kernel.wave.templates.moe import (
-    get_gemm_kernel,
-    get_silu_and_mul_kernel,
-)
+from wave_lang.kernel.wave.constraints import MMAType
+from wave_lang.kernel.wave.templates.moe import get_gemm_kernel, get_silu_and_mul_kernel
 from wave_lang.kernel.wave.utils.general_utils import get_default_scheduling_params
 from wave_lang.kernel.wave.utils.run_utils import set_default_run_config
-from wave_lang.kernel.wave.constraints import MMAType
-from wave_lang.kernel.lang import DataType
 
 dump_generated_mlir = int(os.environ.get("WAVE_DUMP_MLIR", 0))
 enable_scheduling_barriers = int(os.environ.get("WAVE_USE_SCHED_BARRIERS", 0))
@@ -173,9 +170,14 @@ def moe_split_w1_wave(a, w1_gate, w1_up, w2, score, topk):
             partial_out = partial_out.to(dtype=a.dtype)
             if check_individual_kernels:
                 torch.testing.assert_close(
-                    partial_out, lhs @ rhs.transpose(0, 1), rtol=rtol, atol=atol, check_device=False
+                    partial_out,
+                    lhs @ rhs.transpose(0, 1),
+                    rtol=rtol,
+                    atol=atol,
+                    check_device=False,
                 )
             out[mask] = partial_out
     return (
-        out.view(num_tokens, -1, w2.shape[1]) * topk_weight.view(num_tokens, -1, 1).to(out.dtype)
+        out.view(num_tokens, -1, w2.shape[1])
+        * topk_weight.view(num_tokens, -1, 1).to(out.dtype)
     ).sum(dim=1)

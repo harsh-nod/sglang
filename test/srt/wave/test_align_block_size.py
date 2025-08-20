@@ -3,19 +3,18 @@ import unittest
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
+from wave_lang.kernel.lang import DataType
 
-from sglang.srt.layers.moe.wave_ops.fused_moe import (
-    moe_split_w1_wave,
-)
+from sglang.srt.layers.moe.wave_ops.fused_moe import moe_split_w1_wave
 from sglang.srt.utils import is_hip
 from sglang.test.test_utils import CustomTestCase
-from wave_lang.kernel.lang import DataType
 
 _is_hip = is_hip()
 dtypes = [torch.float16, torch.bfloat16]
 
 if _is_hip:
     from sgl_kernel import moe_align_block_size as sgl_moe_align_block_size
+
 
 class TestMoeAlignBlockSize(CustomTestCase):
     NUM_EXPERTS = [4, 8, 64]
@@ -122,7 +121,9 @@ class TestMoeAlignBlockSize(CustomTestCase):
         expert_ids = torch.empty(
             (max_num_m_blocks,), dtype=torch.int32, device=topk_ids.device
         )
-        num_tokens_post_pad = torch.empty((1), dtype=torch.int32, device=topk_ids.device)
+        num_tokens_post_pad = torch.empty(
+            (1), dtype=torch.int32, device=topk_ids.device
+        )
 
         # In EP, expert_ids for filtered experts are -1. We have num_experts + 1 ids in total.
         cumsum_buffer = torch.empty(
@@ -135,7 +136,9 @@ class TestMoeAlignBlockSize(CustomTestCase):
         wave_expert_ids = torch.empty(
             (max_num_m_blocks,), dtype=torch.int32, device=topk_ids.device
         )
-        wave_num_tokens_post_pad = torch.empty((1), dtype=torch.int32, device=topk_ids.device)
+        wave_num_tokens_post_pad = torch.empty(
+            (1), dtype=torch.int32, device=topk_ids.device
+        )
 
         # Threshold based on benchmark results
         fuse_sorted_ids_padding = sorted_ids.shape[0] <= 4096
@@ -144,7 +147,12 @@ class TestMoeAlignBlockSize(CustomTestCase):
             wave_sorted_ids.fill_(topk_ids.numel())
 
         self.moe_align_block_size_pytorch(
-            topk_ids, num_experts, block_size, wave_sorted_ids, wave_expert_ids, wave_num_tokens_post_pad
+            topk_ids,
+            num_experts,
+            block_size,
+            wave_sorted_ids,
+            wave_expert_ids,
+            wave_num_tokens_post_pad,
         )
 
         sgl_moe_align_block_size(
@@ -177,7 +185,9 @@ class TestMoeAlignBlockSize(CustomTestCase):
         torch.manual_seed(0)
 
         # Create progress bar
-        with tqdm(total=total_tests, desc="Running Wave moe_align_block_size tests") as pbar:
+        with tqdm(
+            total=total_tests, desc="Running Wave moe_align_block_size tests"
+        ) as pbar:
             for num_tokens in num_tokens_values:
                 for block_size in block_size_values:
                     for e in self.NUM_EXPERTS:
