@@ -5,7 +5,6 @@ It support page size = 1.
 
 import functools
 import os
-import functools
 
 import torch
 from wave_lang.kernel.lang.global_symbols import *
