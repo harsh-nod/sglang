@@ -15,9 +15,7 @@
 import functools
 import os
 
-import wave_lang.kernel as tk
 import torch
-import torch.nn.functional as F
 from wave_lang.kernel.lang.global_symbols import *
 from wave_lang.kernel.wave.compile import WaveCompileOptions, wave_compile
 from wave_lang.kernel.wave.templates.speculative_decoding import (
